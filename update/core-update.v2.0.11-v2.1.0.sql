@@ -414,6 +414,38 @@ COMMENT ON FUNCTION "direct_voter_deletes_non_voter_trigger"()        IS 'Implem
 COMMENT ON TRIGGER "direct_voter_deletes_non_voter" ON "direct_voter" IS 'An entry in the "direct_voter" table deletes an entry in the "non_voter" table (and vice versa due to trigger "non_voter_deletes_direct_voter" on table "non_voter")';
 
 
+-- different locking levels and different locking order to avoid deadlocks
+
+CREATE OR REPLACE FUNCTION "lock_issue"
+  ( "issue_id_p" "issue"."id"%TYPE )
+  RETURNS VOID
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      -- The following locking order is used:
+      -- 1st) row-level lock on the issue
+      -- 2nd) table-level locks in order of occurrence in the core.sql file
+      PERFORM NULL FROM "issue" WHERE "id" = "issue_id_p" FOR UPDATE;
+      -- NOTE: The row-level exclusive lock in combination with the
+      -- share_row_lock_issue(_via_initiative)_trigger functions (which
+      -- acquire a row-level share lock on the issue) ensure that no data
+      -- is changed, which could affect calculation of snapshots or
+      -- counting of votes. Table "delegation" must be table-level-locked,
+      -- as it also contains issue- and global-scope delegations.
+      LOCK TABLE "member"     IN EXCLUSIVE MODE;  -- exclusive avoids deadlocks
+      LOCK TABLE "privilege"  IN SHARE MODE;
+      LOCK TABLE "membership" IN SHARE MODE;
+      LOCK TABLE "policy"     IN SHARE MODE;
+      LOCK TABLE "delegation" IN SHARE MODE;
+      LOCK TABLE "direct_population_snapshot"     IN EXCLUSIVE MODE;
+      LOCK TABLE "delegating_population_snapshot" IN EXCLUSIVE MODE;
+      LOCK TABLE "direct_interest_snapshot"       IN EXCLUSIVE MODE;
+      LOCK TABLE "delegating_interest_snapshot"   IN EXCLUSIVE MODE;
+      LOCK TABLE "direct_supporter_snapshot"      IN EXCLUSIVE MODE;
+      RETURN;
+    END;
+  $$;
+
+
 -- new comment on function "delete_private_data"()
 
 COMMENT ON FUNCTION "delete_private_data"() IS 'Used by lf_export script. DO NOT USE on productive database, but only on a copy! This function deletes all data which should not be publicly available, and can be used to create a database dump for publication. See source code to see which data is deleted. If you need a different behaviour, copy this function and modify lf_export accordingly, to avoid data-leaks after updating.';
