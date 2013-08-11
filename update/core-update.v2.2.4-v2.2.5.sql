@@ -1,3 +1,8 @@
+-- NOTICE: This update script requires PostgreSQL version 9.1 or higher.
+--         If you use an older version, please dump your database and
+--         update it on a system with PostgreSQL 9.1 or higher, before
+--         restoring it on your original system.
+
 -- NOTICE: The following command cannot be executed within a transaction block
 --         and must be rolled back manually, if the update fails:
 ALTER TYPE "issue_state" ADD VALUE 'canceled_by_admin' AFTER 'voting';
