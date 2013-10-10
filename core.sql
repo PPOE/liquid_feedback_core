@@ -539,6 +539,8 @@ CREATE TABLE "issue" (
         "population"            INT4,
         "voter_count"           INT4,
         "status_quo_schulze_rank" INT4,
+        "order_in_admission_state" INT4,
+        "order_in_open_states"  INT4,
         CONSTRAINT "admission_time_not_null_unless_instantly_accepted" CHECK (
           "admission_time" NOTNULL OR ("accepted" NOTNULL AND "accepted" = "created") ),
         CONSTRAINT "valid_state" CHECK (
@@ -604,6 +606,8 @@ COMMENT ON COLUMN "issue"."latest_snapshot_event"   IS 'Event type of latest sna
 COMMENT ON COLUMN "issue"."population"              IS 'Sum of "weight" column in table "direct_population_snapshot"';
 COMMENT ON COLUMN "issue"."voter_count"             IS 'Total number of direct and delegating voters; This value is related to the final voting, while "population" is related to snapshots before the final voting';
 COMMENT ON COLUMN "issue"."status_quo_schulze_rank" IS 'Schulze rank of status quo, as calculated by "calculate_ranks" function';
+COMMENT ON COLUMN "issue"."order_in_admission_state" IS 'To be used for sorting issues within an area, when showing only issues in admission state; NULL values sort last; updated by "lf_update_issue_order"';
+COMMENT ON COLUMN "issue"."order_in_open_states"     IS 'To be used for sorting issues within an area, when showing all open issues; NULL values sort last; updated by "lf_update_issue_order"';
 
 
 CREATE TABLE "issue_setting" (
@@ -2059,6 +2063,23 @@ CREATE VIEW "critical_opinion" AS
   OR ("degree" = -2 AND "fulfilled" = TRUE);
 
 COMMENT ON VIEW "critical_opinion" IS 'Opinions currently causing dissatisfaction';
+
+
+CREATE VIEW "issue_supporter_in_admission_state" AS
+  SELECT DISTINCT
+    "issue"."area_id",
+    "issue"."id" AS "issue_id",
+    "supporter"."member_id",
+    "direct_interest_snapshot"."weight"
+  FROM "issue"
+  JOIN "supporter" ON "supporter"."issue_id" = "issue"."id"
+  JOIN "direct_interest_snapshot"
+    ON  "direct_interest_snapshot"."issue_id" = "issue"."id"
+    AND "direct_interest_snapshot"."event" = "issue"."latest_snapshot_event"
+    AND "direct_interest_snapshot"."member_id" = "supporter"."member_id"
+  WHERE "issue"."state" = 'admission'::"issue_state";
+
+COMMENT ON VIEW "issue_supporter_in_admission_state" IS 'Helper view for "lf_update_issue_order" to allow a (proportional) ordering of issues within an area';
 
 
 CREATE VIEW "initiative_suggestion_order_calculation" AS
