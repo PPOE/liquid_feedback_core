@@ -263,7 +263,10 @@ static int process_area(PGconn *db, PGresult *res, char *escaped_area_id) {
     tuple_count = PQntuples(res);
     // trivial case, when there are no tuples:
     if (!tuple_count) {
-      if (logging) printf("Nothing to do.\n");
+      // write results to database:
+      if (logging) printf("No supporters for any issue. Deleting ranks in database.\n");
+      err = write_ranks(db, escaped_area_id);
+      if (logging) printf("Done.\n");
       return 0;
     }
     // calculate ballot_count and generate set of candidate keys (suggestion_id is used as key):
