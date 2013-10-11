@@ -178,20 +178,20 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
   PGresult *res;
   char *cmd;
   int i;
-  if (asprintf(&cmd, "BEGIN; UPDATE \"issue\" SET \"order_in_admission_state\" = NULL WHERE \"area_id\" = %s AND (\"state\" = 'admission' OR \"order_in_admission_state\" NOTNULL)", escaped_area_id) < 0) {
+  if (asprintf(&cmd, "BEGIN; DELETE FROM \"issue_order\" USING \"issue\" WHERE \"issue_order\".\"id\" = \"issue\".\"id\" AND \"issue\".\"area_id\" = %s", escaped_area_id) < 0) {
     fprintf(stderr, "Could not prepare query string in memory.\n");
     abort();
   }
   res = PQexec(db, cmd);
   free(cmd);
   if (!res) {
-    fprintf(stderr, "Error in pqlib while sending SQL command to initiate issue update.\n");
+    fprintf(stderr, "Error in pqlib while sending SQL command to initiate issue order update.\n");
     return 1;
   } else if (
     PQresultStatus(res) != PGRES_COMMAND_OK &&
     PQresultStatus(res) != PGRES_TUPLES_OK
   ) {
-    fprintf(stderr, "Error while executing SQL command to initiate issue update:\n%s", PQresultErrorMessage(res));
+    fprintf(stderr, "Error while executing SQL command to initiate issue order update:\n%s", PQresultErrorMessage(res));
     PQclear(res);
     return 1;
   } else {
@@ -204,7 +204,7 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
       fprintf(stderr, "Could not escape literal in memory.\n");
       abort();
     }
-    if (asprintf(&cmd, "UPDATE \"issue\" SET \"order_in_admission_state\" = %i WHERE \"id\" = %s", candidates[i].seat, escaped_issue_id) < 0) {
+    if (asprintf(&cmd, "INSERT INTO \"issue_order\" (\"id\", \"order_in_admission_state\") VALUES (%i, %s)", candidates[i].seat, escaped_issue_id) < 0) {
       fprintf(stderr, "Could not prepare query string in memory.\n");
       abort();
     }
@@ -212,12 +212,12 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
     res = PQexec(db, cmd);
     free(cmd);
     if (!res) {
-      fprintf(stderr, "Error in pqlib while sending SQL command to update issue order.\n");
+      fprintf(stderr, "Error in pqlib while sending SQL command to insert issue order.\n");
     } else if (
       PQresultStatus(res) != PGRES_COMMAND_OK &&
       PQresultStatus(res) != PGRES_TUPLES_OK
     ) {
-      fprintf(stderr, "Error while executing SQL command to update issue order:\n%s", PQresultErrorMessage(res));
+      fprintf(stderr, "Error while executing SQL command to insert issue order:\n%s", PQresultErrorMessage(res));
       PQclear(res);
     } else {
       PQclear(res);

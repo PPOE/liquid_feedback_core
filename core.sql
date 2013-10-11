@@ -539,8 +539,6 @@ CREATE TABLE "issue" (
         "population"            INT4,
         "voter_count"           INT4,
         "status_quo_schulze_rank" INT4,
-        "order_in_admission_state" INT4,
-        "order_in_open_states"  INT4,
         CONSTRAINT "admission_time_not_null_unless_instantly_accepted" CHECK (
           "admission_time" NOTNULL OR ("accepted" NOTNULL AND "accepted" = "created") ),
         CONSTRAINT "valid_state" CHECK (
@@ -590,24 +588,33 @@ CREATE INDEX "issue_closed_idx_canceled" ON "issue" ("closed") WHERE "fully_froz
 
 COMMENT ON TABLE "issue" IS 'Groups of initiatives';
 
-COMMENT ON COLUMN "issue"."admin_notice"             IS 'Public notice by admin to explain manual interventions, or to announce corrections';
-COMMENT ON COLUMN "issue"."phase_finished"           IS 'Set to a value NOTNULL, if the current phase has finished, but calculations are pending; No changes in this issue shall be made by the frontend or API when this value is set';
-COMMENT ON COLUMN "issue"."accepted"                 IS 'Point in time, when one initiative of issue reached the "issue_quorum"';
-COMMENT ON COLUMN "issue"."half_frozen"              IS 'Point in time, when "discussion_time" has elapsed; Frontends must ensure that for half_frozen issues a) initiatives are not revoked, b) no new drafts are created, c) no initiators are added or removed.';
-COMMENT ON COLUMN "issue"."fully_frozen"             IS 'Point in time, when "verification_time" has elapsed and voting has started; Frontends must ensure that for fully_frozen issues additionally to the restrictions for half_frozen issues a) initiatives are not created, b) no interest is created or removed, c) no supporters are added or removed, d) no opinions are created, changed or deleted.';
-COMMENT ON COLUMN "issue"."closed"                   IS 'Point in time, when "admission_time" or "voting_time" have elapsed, and issue is no longer active; Frontends must ensure that for closed issues additionally to the restrictions for half_frozen and fully_frozen issues a) no voter is added or removed to/from the direct_voter table, b) no votes are added, modified or removed.';
-COMMENT ON COLUMN "issue"."cleaned"                  IS 'Point in time, when discussion data and votes had been deleted';
-COMMENT ON COLUMN "issue"."admission_time"           IS 'Copied from "policy" table at creation of issue';
-COMMENT ON COLUMN "issue"."discussion_time"          IS 'Copied from "policy" table at creation of issue';
-COMMENT ON COLUMN "issue"."verification_time"        IS 'Copied from "policy" table at creation of issue';
-COMMENT ON COLUMN "issue"."voting_time"              IS 'Copied from "policy" table at creation of issue';
-COMMENT ON COLUMN "issue"."snapshot"                 IS 'Point in time, when snapshot tables have been updated and "population" and *_count values were precalculated';
-COMMENT ON COLUMN "issue"."latest_snapshot_event"    IS 'Event type of latest snapshot for issue; Can be used to select the latest snapshot data in the snapshot tables';
-COMMENT ON COLUMN "issue"."population"               IS 'Sum of "weight" column in table "direct_population_snapshot"';
-COMMENT ON COLUMN "issue"."voter_count"              IS 'Total number of direct and delegating voters; This value is related to the final voting, while "population" is related to snapshots before the final voting';
-COMMENT ON COLUMN "issue"."status_quo_schulze_rank"  IS 'Schulze rank of status quo, as calculated by "calculate_ranks" function';
-COMMENT ON COLUMN "issue"."order_in_admission_state" IS 'To be used for sorting issues within an area, when showing only issues in admission state; NULL values sort last; updated by "lf_update_issue_order"';
-COMMENT ON COLUMN "issue"."order_in_open_states"     IS 'To be used for sorting issues within an area, when showing all open issues; NULL values sort last; updated by "lf_update_issue_order"';
+COMMENT ON COLUMN "issue"."admin_notice"            IS 'Public notice by admin to explain manual interventions, or to announce corrections';
+COMMENT ON COLUMN "issue"."phase_finished"          IS 'Set to a value NOTNULL, if the current phase has finished, but calculations are pending; No changes in this issue shall be made by the frontend or API when this value is set';
+COMMENT ON COLUMN "issue"."accepted"                IS 'Point in time, when one initiative of issue reached the "issue_quorum"';
+COMMENT ON COLUMN "issue"."half_frozen"             IS 'Point in time, when "discussion_time" has elapsed; Frontends must ensure that for half_frozen issues a) initiatives are not revoked, b) no new drafts are created, c) no initiators are added or removed.';
+COMMENT ON COLUMN "issue"."fully_frozen"            IS 'Point in time, when "verification_time" has elapsed and voting has started; Frontends must ensure that for fully_frozen issues additionally to the restrictions for half_frozen issues a) initiatives are not created, b) no interest is created or removed, c) no supporters are added or removed, d) no opinions are created, changed or deleted.';
+COMMENT ON COLUMN "issue"."closed"                  IS 'Point in time, when "admission_time" or "voting_time" have elapsed, and issue is no longer active; Frontends must ensure that for closed issues additionally to the restrictions for half_frozen and fully_frozen issues a) no voter is added or removed to/from the direct_voter table, b) no votes are added, modified or removed.';
+COMMENT ON COLUMN "issue"."cleaned"                 IS 'Point in time, when discussion data and votes had been deleted';
+COMMENT ON COLUMN "issue"."admission_time"          IS 'Copied from "policy" table at creation of issue';
+COMMENT ON COLUMN "issue"."discussion_time"         IS 'Copied from "policy" table at creation of issue';
+COMMENT ON COLUMN "issue"."verification_time"       IS 'Copied from "policy" table at creation of issue';
+COMMENT ON COLUMN "issue"."voting_time"             IS 'Copied from "policy" table at creation of issue';
+COMMENT ON COLUMN "issue"."snapshot"                IS 'Point in time, when snapshot tables have been updated and "population" and *_count values were precalculated';
+COMMENT ON COLUMN "issue"."latest_snapshot_event"   IS 'Event type of latest snapshot for issue; Can be used to select the latest snapshot data in the snapshot tables';
+COMMENT ON COLUMN "issue"."population"              IS 'Sum of "weight" column in table "direct_population_snapshot"';
+COMMENT ON COLUMN "issue"."voter_count"             IS 'Total number of direct and delegating voters; This value is related to the final voting, while "population" is related to snapshots before the final voting';
+COMMENT ON COLUMN "issue"."status_quo_schulze_rank" IS 'Schulze rank of status quo, as calculated by "calculate_ranks" function';
+
+
+CREATE TABLE "issue_order" (
+        "id"                    INT8            PRIMARY KEY REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "order_in_admission_state" INT4,
+        "order_in_open_states"  INT4 );
+
+COMMENT ON TABLE "issue_order" IS 'Ordering information for issues that are not stored in the "issue" table to avoid locking of multiple issues at once';
+
+COMMENT ON COLUMN "issue_order"."order_in_admission_state" IS 'To be used for sorting issues within an area, when showing only issues in admission state; NULL values sort last; updated by "lf_update_issue_order"';
+COMMENT ON COLUMN "issue_order"."order_in_open_states"     IS 'To be used for sorting issues within an area, when showing all open issues; NULL values sort last; updated by "lf_update_issue_order"';
 
 
 CREATE TABLE "issue_setting" (
@@ -2087,7 +2094,7 @@ CREATE VIEW "open_issues_ordered_with_minimum_position" AS
     "area_id",
     "id" AS "issue_id",
     "order_in_admission_state" * 2 - 1 AS "minimum_position"
-  FROM "issue"
+  FROM "issue" NATURAL LEFT JOIN "issue_order"
   WHERE "closed" ISNULL
   ORDER BY
     coalesce(
