@@ -605,6 +605,23 @@ int main(int argc, char **argv) {
     PQclear(res);
   }
 
+  // clean-up entries of deleted issues
+  res = PQexec(db, "DELETE FROM \"issue_order\" USING \"issue_order\" AS \"issue_order2\" NATURAL LEFT JOIN \"issue\" WHERE \"issue_order\".\"id\" = \"issue_order2\".\"id\" AND \"issue\".\"id\" ISNULL");
+  if (!res) {
+    fprintf(stderr, "Error in pqlib while sending SQL command deleting ordering data of deleted issues.\n");
+    err = 1;
+  } else if (
+    PQresultStatus(res) != PGRES_COMMAND_OK &&
+    PQresultStatus(res) != PGRES_TUPLES_OK
+  ) {
+    fprintf(stderr, "Error while executing SQL command deleting ordering data of deleted issues:\n%s", PQresultErrorMessage(res));
+    err = 1;
+    PQclear(res);
+  } else {
+    if (logging) printf("Cleaned up ordering data of %s deleted issues.\n", PQcmdTuples(res));
+    PQclear(res);
+  }
+
   // cleanup and exit:
   PQfinish(db);
   if (!err) {
