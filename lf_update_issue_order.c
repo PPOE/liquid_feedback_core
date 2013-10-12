@@ -81,11 +81,11 @@ static struct candidate *candidate_by_key(char *candidate_key) {
   return candidate;
 }
 
-// ballot of the proportional runoff system:
+// ballot of the proportional runoff system, containing only one preference section:
 struct ballot {
   int weight;  // if weight is greater than 1, then the ballot is counted multiple times
-  int count;
-  struct candidate **candidates;
+  int count;   // number of candidates
+  struct candidate **candidates;  // all candidates equally preferred
 };
 
 // open issue to be assigned an "order_in_open_states":
@@ -371,7 +371,7 @@ static int process_area(PGconn *db, PGresult *res, char *escaped_area_id) {
     // trivial case, when there are no tuples:
     if (!tuple_count) {
       // write results to database:
-      if (logging) printf("No supporters for any issue. Deleting ranks in database.\n");
+      if (logging) printf("No supporters for any issue. Writing ranks to database.\n");
       err = write_ranks(db, escaped_area_id);
       if (logging) printf("Done.\n");
       return 0;
