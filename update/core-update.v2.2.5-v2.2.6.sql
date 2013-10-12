@@ -5,12 +5,13 @@ CREATE OR REPLACE VIEW "liquid_feedback_version" AS
   AS "subquery"("string", "major", "minor", "revision");
 
 CREATE TABLE "issue_order" (
-        "id"                    INT8            PRIMARY KEY REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "id"                    INT8            PRIMARY KEY, --REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "order_in_admission_state" INT4,
         "order_in_open_states"  INT4 );
 
 COMMENT ON TABLE "issue_order" IS 'Ordering information for issues that are not stored in the "issue" table to avoid locking of multiple issues at once';
 
+COMMENT ON COLUMN "issue_order"."id"                       IS 'References "issue" ("id") but has no referential integrity trigger associated, due to performance/locking issues';
 COMMENT ON COLUMN "issue_order"."order_in_admission_state" IS 'To be used for sorting issues within an area, when showing only issues in admission state; NULL values sort last; updated by "lf_update_issue_order"';
 COMMENT ON COLUMN "issue_order"."order_in_open_states"     IS 'To be used for sorting issues within an area, when showing all open issues; NULL values sort last; updated by "lf_update_issue_order"';
 
