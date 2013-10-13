@@ -32,9 +32,9 @@ static void freemem(void *ptr) {
 #define COL_WEIGHT    1
 #define COL_ISSUE_ID  2
 
-// data structure for a candidate (in this case a suggestion) to the proportional runoff system:
+// data structure for a candidate (in this case an issue) to the proportional runoff system:
 struct candidate {
-  char *key;              // identifier of the candidate, which is the "suggestion_id" string
+  char *key;              // identifier of the candidate, which is the "issue_id" string
   double score_per_step;  // added score per step
   double score;           // current score of candidate; a score of 1.0 is needed to survive a round
   int seat;               // equals 0 for unseated candidates, or contains rank number
@@ -64,11 +64,11 @@ static void register_candidate(char **candidate_key, VISIT visit, int level) {
     candidate = candidates + (candidate_count++);
     candidate->key  = *candidate_key;
     candidate->seat = 0;
-    if (logging) printf("Candidate #%i is suggestion #%s.\n", candidate_count, candidate->key);
+    if (logging) printf("Candidate #%i is issue #%s.\n", candidate_count, candidate->key);
   }
 }
 
-// performs a binary search in candidates[] array to lookup a candidate by its key (which is the suggestion_id):
+// performs a binary search in candidates[] array to lookup a candidate by its key (which is the issue_id):
 static struct candidate *candidate_by_key(char *candidate_key) {
   struct candidate *candidate;
   struct candidate compare;
@@ -141,7 +141,7 @@ static struct candidate *loser(int round_number, struct ballot *ballots, int bal
     for (i=0; i<candidate_count; i++) {
       int log_candidate = 0;
       if (logging && candidates[i].score < 1.0 && !candidates[i].seat) log_candidate = 1;
-      if (log_candidate) printf("Score for suggestion #%s = %.4f+%.4f*%.4f", candidates[i].key, candidates[i].score, scale, candidates[i].score_per_step);
+      if (log_candidate) printf("Score for issue #%s = %.4f+%.4f*%.4f", candidates[i].key, candidates[i].score, scale, candidates[i].score_per_step);
       if (candidates[i].score_per_step > 0.0) {
         double max_scale;
         max_scale = (1.0-candidates[i].score) / candidates[i].score_per_step;
@@ -269,7 +269,7 @@ static int process_area(PGconn *db, PGresult *res, char *escaped_area_id) {
       if (logging) printf("Done.\n");
       return 0;
     }
-    // calculate ballot_count and generate set of candidate keys (suggestion_id is used as key):
+    // calculate ballot_count and generate set of candidate keys (issue_id is used as key):
     for (i=0; i<tuple_count; i++) {
       char *member_id, *issue_id;
       member_id = PQgetvalue(res, i, COL_MEMBER_ID);
