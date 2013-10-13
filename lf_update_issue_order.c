@@ -206,7 +206,7 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
   PGresult *res;
   char *cmd;
   int i;
-  if (asprintf(&cmd, "BEGIN; DELETE FROM \"issue_order\" USING \"issue\" WHERE \"issue_order\".\"id\" = \"issue\".\"id\" AND \"issue\".\"area_id\" = %s", escaped_area_id) < 0) {
+  if (asprintf(&cmd, "BEGIN; DELETE FROM \"issue_order\" USING \"issue\" WHERE \"issue_order\".\"id\" = \"issue\".\"id\" AND \"issue\".\"area_id\" = %s; INSERT INTO \"issue_order\" (\"id\") SELECT \"id\" FROM \"issue\" WHERE \"area_id\" = %s", escaped_area_id, escaped_area_id) < 0) {
     fprintf(stderr, "Could not prepare query string in memory.\n");
     abort();
   }
@@ -232,7 +232,7 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
       fprintf(stderr, "Could not escape literal in memory.\n");
       abort();
     }
-    if (asprintf(&cmd, "INSERT INTO \"issue_order\" (\"id\", \"order_in_admission_state\") VALUES (%s, %i)", escaped_issue_id, candidates[i].seat) < 0) {
+    if (asprintf(&cmd, "UPDATE \"issue_order\" SET \"order_in_admission_state\" = %i WHERE \"id\" = %s", candidates[i].seat, escaped_issue_id) < 0) {
       fprintf(stderr, "Could not prepare query string in memory.\n");
       abort();
     }
@@ -240,12 +240,12 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
     res = PQexec(db, cmd);
     free(cmd);
     if (!res) {
-      fprintf(stderr, "Error in pqlib while sending SQL command to insert issue order.\n");
+      fprintf(stderr, "Error in pqlib while sending SQL command to update issue order in admission state.\n");
     } else if (
       PQresultStatus(res) != PGRES_COMMAND_OK &&
       PQresultStatus(res) != PGRES_TUPLES_OK
     ) {
-      fprintf(stderr, "Error while executing SQL command to insert issue order:\n%s", PQresultErrorMessage(res));
+      fprintf(stderr, "Error while executing SQL command to update issue order in admission state:\n%s", PQresultErrorMessage(res));
       PQclear(res);
     } else {
       PQclear(res);
@@ -316,12 +316,12 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
       res = PQexec(db, cmd);
       free(cmd);
       if (!res) {
-        fprintf(stderr, "Error in pqlib while sending SQL command to update issue order.\n");
+        fprintf(stderr, "Error in pqlib while sending SQL command to update issue order in open states.\n");
       } else if (
         PQresultStatus(res) != PGRES_COMMAND_OK &&
         PQresultStatus(res) != PGRES_TUPLES_OK
       ) {
-        fprintf(stderr, "Error while executing SQL command to update issue order:\n%s", PQresultErrorMessage(res));
+        fprintf(stderr, "Error while executing SQL command to update issue order in open states:\n%s", PQresultErrorMessage(res));
         PQclear(res);
       } else {
         PQclear(res);
