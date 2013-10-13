@@ -308,7 +308,7 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
         fprintf(stderr, "Could not escape literal in memory.\n");
         abort();
       }
-      if (asprintf(&cmd, "UPDATE \"issue_order\" SET \"order_in_open_states\" = %i WHERE \"id\" = %s)", open_issues[i].position, escaped_issue_id) < 0) {
+      if (asprintf(&cmd, "UPDATE \"issue_order\" SET \"order_in_open_states\" = %i WHERE \"id\" = %s", open_issues[i].position, escaped_issue_id) < 0) {
         fprintf(stderr, "Could not prepare query string in memory.\n");
         abort();
       }
