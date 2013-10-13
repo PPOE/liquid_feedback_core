@@ -303,7 +303,7 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
     calculate_order_in_open_states(open_issues, open_issue_count);
     for (i=0; i<open_issue_count; i++) {
       char *escaped_issue_id;
-      escaped_issue_id = escapeLiteral(db, open_issues[i].issue_id, strlen(open_issues[i].issue_id));
+      escaped_issue_id = escapeLiteral(db, open_issues[i].issue_id, strlen(open_issues[i].issue_id));  // TODO: BUG: the string is already freed
       if (!escaped_issue_id) {
         fprintf(stderr, "Could not escape literal in memory.\n");
         abort();
