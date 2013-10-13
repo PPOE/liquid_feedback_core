@@ -88,13 +88,6 @@ struct ballot {
   struct candidate **candidates;  // all candidates equally preferred
 };
 
-// open issue to be assigned an "order_in_open_states":
-struct open_issue {
-  char *issue_id;
-  int minimum_position;
-  int position;
-};
-
 // determine candidate, which is assigned the next seat (starting with the worst rank):
 static struct candidate *loser(int round_number, struct ballot *ballots, int ballot_count) {
   int i, j;       // index variables for loops
@@ -180,33 +173,12 @@ static struct candidate *loser(int round_number, struct ballot *ballots, int bal
   abort();
 }
 
-// calculate "order_in_open_states":
-static void calculate_order_in_open_states(struct open_issue *open_issues, int open_issue_count) {
-  int i, j, fallback_j = 0, fallback_minimum_position;
-  for (i=1; i<=open_issue_count; i++) {
-    fallback_minimum_position = -1;
-    for (j=0; j<open_issue_count; j++) {
-      if (open_issues[j].position) continue;
-      if (open_issues[j].minimum_position <= i) break;
-      if (
-        fallback_minimum_position < 0 ||
-        open_issues[j].minimum_position < fallback_minimum_position
-      ) {
-        fallback_j = j;
-        fallback_minimum_position = open_issues[j].minimum_position;
-      }
-    }
-    if (j==open_issue_count) j = fallback_j;
-    open_issues[j].position = i;
-  }
-}
-
-// write results to database (calls calculate_open_issue_order):
+// write results to database:
 static int write_ranks(PGconn *db, char *escaped_area_id) {
   PGresult *res;
   char *cmd;
   int i;
-  if (asprintf(&cmd, "BEGIN; DELETE FROM \"issue_order\" USING \"issue\" WHERE \"issue_order\".\"id\" = \"issue\".\"id\" AND \"issue\".\"area_id\" = %s; INSERT INTO \"issue_order\" (\"id\") SELECT \"id\" FROM \"issue\" WHERE \"area_id\" = %s", escaped_area_id, escaped_area_id) < 0) {
+  if (asprintf(&cmd, "BEGIN; DELETE FROM \"issue_order\" USING \"issue\" WHERE \"issue_order\".\"id\" = \"issue\".\"id\" AND \"issue\".\"area_id\" = %s", escaped_area_id) < 0) {
     fprintf(stderr, "Could not prepare query string in memory.\n");
     abort();
   }
@@ -232,7 +204,7 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
       fprintf(stderr, "Could not escape literal in memory.\n");
       abort();
     }
-    if (asprintf(&cmd, "UPDATE \"issue_order\" SET \"order_in_admission_state\" = %i WHERE \"id\" = %s", candidates[i].seat, escaped_issue_id) < 0) {
+    if (asprintf(&cmd, "INSERT INTO \"issue_order\" (\"id\", \"order_in_admission_state\") VALUES (%s, %i)", escaped_issue_id, candidates[i].seat) < 0) {
       fprintf(stderr, "Could not prepare query string in memory.\n");
       abort();
     }
@@ -240,12 +212,12 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
     res = PQexec(db, cmd);
     free(cmd);
     if (!res) {
-      fprintf(stderr, "Error in pqlib while sending SQL command to update issue order in admission state.\n");
+      fprintf(stderr, "Error in pqlib while sending SQL command to insert issue order.\n");
     } else if (
       PQresultStatus(res) != PGRES_COMMAND_OK &&
       PQresultStatus(res) != PGRES_TUPLES_OK
     ) {
-      fprintf(stderr, "Error while executing SQL command to update issue order in admission state:\n%s", PQresultErrorMessage(res));
+      fprintf(stderr, "Error while executing SQL command to insert issue order:\n%s", PQresultErrorMessage(res));
       PQclear(res);
     } else {
       PQclear(res);
@@ -254,85 +226,6 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
     res = PQexec(db, "ROLLBACK");
     if (res) PQclear(res);
     return 1;
-  }
-  if (asprintf(&cmd, "SELECT \"issue_id\", \"minimum_position\" FROM \"open_issues_ordered_with_minimum_position\" WHERE \"area_id\" = %s", escaped_area_id) < 0) {
-    fprintf(stderr, "Could not prepare query string in memory.\n");
-    abort();
-  }
-  res = PQexec(db, cmd);
-  free(cmd);
-  if (!res) {
-    fprintf(stderr, "Error in pqlib while sending SQL command selecting ordered issues with minimum position.\n");
-    res = PQexec(db, "ROLLBACK");
-    if (res) PQclear(res);
-    return 1;
-  } else if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-    fprintf(stderr, "Error while executing SQL command selecting ordered issues with minimum position:\n%s", PQresultErrorMessage(res));
-    PQclear(res);
-    res = PQexec(db, "ROLLBACK");
-    if (res) PQclear(res);
-    return 1;
-  } else if (PQnfields(res) < 2) {
-    fprintf(stderr, "Too few columns returned by SQL command selecting ordered issues with minimum position.\n");
-    PQclear(res);
-    res = PQexec(db, "ROLLBACK");
-    if (res) PQclear(res);
-    return 1;
-  } else {
-    int open_issue_count;
-    struct open_issue *open_issues;
-    open_issue_count = PQntuples(res);
-    open_issues = calloc(open_issue_count, sizeof(struct open_issue));
-    for (i=0; i<open_issue_count; i++) {
-      open_issues[i].issue_id = PQgetvalue(res, i, 0);
-      if (PQgetisnull(res, i, 1)) {
-        open_issues[i].minimum_position = 0;
-      } else {
-        open_issues[i].minimum_position = (int)strtol(PQgetvalue(res, i, 1), (char **)NULL, 10);
-        if (open_issues[i].minimum_position < 1) {
-          fprintf(stderr, "Unexpected minimum position value.\n");
-          PQclear(res);
-          free(open_issues);
-          res = PQexec(db, "ROLLBACK");
-          if (res) PQclear(res);
-          return 1;
-        }
-      }
-    }
-    PQclear(res);
-    calculate_order_in_open_states(open_issues, open_issue_count);
-    for (i=0; i<open_issue_count; i++) {
-      char *escaped_issue_id;
-      escaped_issue_id = escapeLiteral(db, open_issues[i].issue_id, strlen(open_issues[i].issue_id));  // TODO: BUG: the string is already freed
-      if (!escaped_issue_id) {
-        fprintf(stderr, "Could not escape literal in memory.\n");
-        abort();
-      }
-      if (asprintf(&cmd, "UPDATE \"issue_order\" SET \"order_in_open_states\" = %i WHERE \"id\" = %s", open_issues[i].position, escaped_issue_id) < 0) {
-        fprintf(stderr, "Could not prepare query string in memory.\n");
-        abort();
-      }
-      freemem(escaped_issue_id);
-      res = PQexec(db, cmd);
-      free(cmd);
-      if (!res) {
-        fprintf(stderr, "Error in pqlib while sending SQL command to update issue order in open states.\n");
-      } else if (
-        PQresultStatus(res) != PGRES_COMMAND_OK &&
-        PQresultStatus(res) != PGRES_TUPLES_OK
-      ) {
-        fprintf(stderr, "Error while executing SQL command to update issue order in open states:\n%s", PQresultErrorMessage(res));
-        PQclear(res);
-      } else {
-        PQclear(res);
-        continue;
-      }
-      free(open_issues);
-      res = PQexec(db, "ROLLBACK");
-      if (res) PQclear(res);
-      return 1;
-    }
-    free(open_issues);
   }
   res = PQexec(db, "COMMIT");
   if (!res) {
