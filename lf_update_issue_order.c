@@ -204,7 +204,7 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
       fprintf(stderr, "Could not escape literal in memory.\n");
       abort();
     }
-    if (asprintf(&cmd, "INSERT INTO \"issue_order\" (\"id\", \"order_in_admission_state\") VALUES (%s, %i)", escaped_issue_id, candidates[i].seat) < 0) {
+    if (asprintf(&cmd, "INSERT INTO \"issue_order\" (\"id\", \"order_in_admission_state\", \"max_supporter_count\") SELECT %s, %i, max(\"supporter_count\") FROM \"initiative\" WHERE \"issue_id\" = %s", escaped_issue_id, candidates[i].seat, escaped_issue_id) < 0) {
       fprintf(stderr, "Could not prepare query string in memory.\n");
       abort();
     }
