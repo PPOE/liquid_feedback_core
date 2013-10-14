@@ -174,16 +174,11 @@ static struct candidate *loser(int round_number, struct ballot *ballots, int bal
 }
 
 // write results to database:
-static int write_ranks(PGconn *db, char *escaped_area_id) {
+static int write_ranks(PGconn *db, char *escaped_area_or_unit_id, char *mode) {
   PGresult *res;
   char *cmd;
   int i;
-  if (asprintf(&cmd, "BEGIN; DELETE FROM \"issue_order\" USING \"issue\" WHERE \"issue_order\".\"id\" = \"issue\".\"id\" AND \"issue\".\"area_id\" = %s", escaped_area_id) < 0) {
-    fprintf(stderr, "Could not prepare query string in memory.\n");
-    abort();
-  }
-  res = PQexec(db, cmd);
-  free(cmd);
+  res = PQexec(db, "BEGIN");
   if (!res) {
     fprintf(stderr, "Error in pqlib while sending SQL command to initiate issue order update.\n");
     return 1;
@@ -204,7 +199,7 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
       fprintf(stderr, "Could not escape literal in memory.\n");
       abort();
     }
-    if (asprintf(&cmd, "INSERT INTO \"issue_order\" (\"id\", \"order_in_admission_state\", \"max_supporter_count\") SELECT %s, %i, max(\"supporter_count\") FROM \"initiative\" WHERE \"issue_id\" = %s", escaped_issue_id, candidates[i].seat, escaped_issue_id) < 0) {
+    if (asprintf(&cmd, "UPDATE \"issue_order_in_admission_state\" SET \"order_in_%s\" = %i WHERE \"id\" = %s", mode, candidates[i].seat, escaped_issue_id) < 0) {
       fprintf(stderr, "Could not prepare query string in memory.\n");
       abort();
     }
@@ -212,12 +207,12 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
     res = PQexec(db, cmd);
     free(cmd);
     if (!res) {
-      fprintf(stderr, "Error in pqlib while sending SQL command to insert issue order.\n");
+      fprintf(stderr, "Error in pqlib while sending SQL command to update issue order.\n");
     } else if (
       PQresultStatus(res) != PGRES_COMMAND_OK &&
       PQresultStatus(res) != PGRES_TUPLES_OK
     ) {
-      fprintf(stderr, "Error while executing SQL command to insert issue order:\n%s", PQresultErrorMessage(res));
+      fprintf(stderr, "Error while executing SQL command to update issue order:\n%s", PQresultErrorMessage(res));
       PQclear(res);
     } else {
       PQclear(res);
@@ -245,7 +240,7 @@ static int write_ranks(PGconn *db, char *escaped_area_id) {
 }
 
 // calculate ordering of issues in admission state for an area and call write_ranks() to write it to database:
-static int process_area(PGconn *db, PGresult *res, char *escaped_area_id) {
+static int process_area_or_unit(PGconn *db, PGresult *res, char *escaped_area_or_unit_id, char *mode) {
   int err;                 // variable to store an error condition (0 = success)
   int ballot_count = 1;    // number of ballots, must be initiatized to 1, due to loop below
   struct ballot *ballots;  // data structure containing the ballots
@@ -265,7 +260,7 @@ static int process_area(PGconn *db, PGresult *res, char *escaped_area_id) {
     if (!tuple_count) {
       // write results to database:
       if (logging) printf("No supporters for any issue. Writing ranks to database.\n");
-      err = write_ranks(db, escaped_area_id);
+      err = write_ranks(db, escaped_area_or_unit_id, mode);
       if (logging) printf("Done.\n");
       return 0;
     }
@@ -377,7 +372,7 @@ static int process_area(PGconn *db, PGresult *res, char *escaped_area_id) {
 
   // write results to database:
   if (logging) printf("Writing ranks to database.\n");
-  err = write_ranks(db, escaped_area_id);
+  err = write_ranks(db, escaped_area_or_unit_id, mode);
   if (logging) printf("Done.\n");
 
   // free candidates[] array:
@@ -445,6 +440,23 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // create missing "issue_order_in_admission_state" entries for issues
+  res = PQexec(db, "INSERT INTO \"issue_order_in_admission_state\" (\"id\") SELECT \"issue\".\"id\" FROM \"issue\" NATURAL LEFT JOIN \"issue_order_in_admission_state\" WHERE \"issue\".\"state\" = 'admission'::\"issue_state\" AND \"issue_order_in_admission_state\".\"id\" ISNULL");
+  if (!res) {
+    fprintf(stderr, "Error in pqlib while sending SQL command creating new issue order entries.\n");
+    err = 1;
+  } else if (
+    PQresultStatus(res) != PGRES_COMMAND_OK &&
+    PQresultStatus(res) != PGRES_TUPLES_OK
+  ) {
+    fprintf(stderr, "Error while executing SQL command creating new issue order entries:\n%s", PQresultErrorMessage(res));
+    err = 1;
+    PQclear(res);
+  } else {
+    if (logging) printf("Created %s new issue order entries.\n", PQcmdTuples(res));
+    PQclear(res);
+  }
+
   // go through areas:
   res = PQexec(db, "SELECT \"id\" FROM \"area\"");
   if (!res) {
@@ -490,7 +502,7 @@ int main(int argc, char **argv) {
         err = 1;
         PQclear(res2);
       } else {
-        if (process_area(db, res2, escaped_area_id)) err = 1;
+        if (process_area_or_unit(db, res2, escaped_area_id, "area")) err = 1;
         PQclear(res2);
       }
       freemem(escaped_area_id);
@@ -498,8 +510,61 @@ int main(int argc, char **argv) {
     PQclear(res);
   }
 
+  // go through units:
+  res = PQexec(db, "SELECT \"id\" FROM \"unit\"");
+  if (!res) {
+    fprintf(stderr, "Error in pqlib while sending SQL command selecting units to process.\n");
+    err = 1;
+  } else if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+    fprintf(stderr, "Error while executing SQL command selecting units to process:\n%s", PQresultErrorMessage(res));
+    err = 1;
+    PQclear(res);
+  } else if (PQnfields(res) < 1) {
+    fprintf(stderr, "Too few columns returned by SQL command selecting units to process.\n");
+    err = 1;
+    PQclear(res);
+  } else {
+    count = PQntuples(res);
+    if (logging) printf("Number of units to process: %i\n", count);
+    for (i=0; i<count; i++) {
+      char *unit_id, *escaped_unit_id;
+      char *cmd;
+      PGresult *res2;
+      unit_id = PQgetvalue(res, i, 0);
+      if (logging) printf("Processing unit #%s:\n", unit_id);
+      escaped_unit_id = escapeLiteral(db, unit_id, strlen(unit_id));
+      if (!escaped_unit_id) {
+        fprintf(stderr, "Could not escape literal in memory.\n");
+        abort();
+      }
+      if (asprintf(&cmd, "SELECT \"member_id\", \"weight\", \"issue_id\" FROM \"issue_supporter_in_admission_state\" WHERE \"unit_id\" = %s ORDER BY \"member_id\"", escaped_unit_id) < 0) {
+        fprintf(stderr, "Could not prepare query string in memory.\n");
+        abort();
+      }
+      res2 = PQexec(db, cmd);
+      free(cmd);
+      if (!res2) {
+        fprintf(stderr, "Error in pqlib while sending SQL command selecting issue supporter in admission state.\n");
+        err = 1;
+      } else if (PQresultStatus(res2) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Error while executing SQL command selecting issue supporter in admission state:\n%s", PQresultErrorMessage(res));
+        err = 1;
+        PQclear(res2);
+      } else if (PQnfields(res2) < 3) {
+        fprintf(stderr, "Too few columns returned by SQL command selecting issue supporter in admission state.\n");
+        err = 1;
+        PQclear(res2);
+      } else {
+        if (process_area_or_unit(db, res2, escaped_unit_id, "unit")) err = 1;
+        PQclear(res2);
+      }
+      freemem(escaped_unit_id);
+    }
+    PQclear(res);
+  }
+
   // clean-up entries of deleted issues
-  res = PQexec(db, "DELETE FROM \"issue_order\" USING \"issue_order\" AS \"issue_order2\" NATURAL LEFT JOIN \"issue\" WHERE \"issue_order\".\"id\" = \"issue_order2\".\"id\" AND \"issue\".\"id\" ISNULL");
+  res = PQexec(db, "DELETE FROM \"issue_order_in_admission_state\" USING \"issue_order_in_admission_state\" AS \"self\" NATURAL LEFT JOIN \"issue\" WHERE \"issue_order_in_admission_state\".\"id\" = \"self\".\"id\" AND (\"issue\".\"id\" ISNULL OR \"issue\".\"state\" != 'admission'::\"issue_state\")");
   if (!res) {
     fprintf(stderr, "Error in pqlib while sending SQL command deleting ordering data of deleted issues.\n");
     err = 1;
