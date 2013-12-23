@@ -707,13 +707,13 @@ COMMENT ON COLUMN "initiative"."positive_votes"         IS 'Calculated from tabl
 COMMENT ON COLUMN "initiative"."negative_votes"         IS 'Calculated from table "direct_voter"';
 COMMENT ON COLUMN "initiative"."direct_majority"        IS 'TRUE, if "positive_votes"/("positive_votes"+"negative_votes") is strictly greater or greater-equal than "direct_majority_num"/"direct_majority_den", and "positive_votes" is greater-equal than "direct_majority_positive", and ("positive_votes"+abstentions) is greater-equal than "direct_majority_non_negative"';
 COMMENT ON COLUMN "initiative"."indirect_majority"      IS 'Same as "direct_majority", but also considering indirect beat paths';
-COMMENT ON COLUMN "initiative"."schulze_rank"           IS 'Schulze-Ranking without tie-breaking';
-COMMENT ON COLUMN "initiative"."better_than_status_quo" IS 'TRUE, if initiative has a schulze-ranking better than the status quo (without tie-breaking)';
-COMMENT ON COLUMN "initiative"."worse_than_status_quo"  IS 'TRUE, if initiative has a schulze-ranking worse than the status quo (without tie-breaking)';
+COMMENT ON COLUMN "initiative"."schulze_rank"           IS 'Schulze-Ranking';
+COMMENT ON COLUMN "initiative"."better_than_status_quo" IS 'TRUE, if initiative has a schulze-ranking better than the status quo';
+COMMENT ON COLUMN "initiative"."worse_than_status_quo"  IS 'TRUE, if initiative has a schulze-ranking worse than the status quo (DEPRECATED, since schulze-ranking is unique per issue; use "better_than_status_quo"=FALSE)';
 COMMENT ON COLUMN "initiative"."reverse_beat_path"      IS 'TRUE, if there is a beat path (may include ties) from this initiative to the status quo';
 COMMENT ON COLUMN "initiative"."multistage_majority"    IS 'TRUE, if either (a) this initiative has no better rank than the status quo, or (b) there exists a better ranked initiative X, which directly beats this initiative, and either more voters prefer X to this initiative than voters preferring X to the status quo or less voters prefer this initiative to X than voters preferring the status quo to X';
 COMMENT ON COLUMN "initiative"."eligible"               IS 'Initiative has a "direct_majority" and an "indirect_majority", is "better_than_status_quo" and depending on selected policy the initiative has no "reverse_beat_path" or "multistage_majority"';
-COMMENT ON COLUMN "initiative"."winner"                 IS 'Winner is the "eligible" initiative with best "schulze_rank" and in case of ties with lowest "id"';
+COMMENT ON COLUMN "initiative"."winner"                 IS 'Winner is the "eligible" initiative with best "schulze_rank"';
 COMMENT ON COLUMN "initiative"."rank"                   IS 'Unique ranking for all "admitted" initiatives per issue; lower rank is better; a winner always has rank 1, but rank 1 does not imply that an initiative is winner; initiatives with "direct_majority" AND "indirect_majority" always have a better (lower) rank than other initiatives';
 
 
@@ -3811,8 +3811,6 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
       "battle_row"        "battle"%ROWTYPE;
       "rank_ary"          INT4[];
       "rank_v"            INT4;
-      "done_v"            INTEGER;
-      "winners_ary"       INTEGER[];
       "initiative_id_v"   "initiative"."id"%TYPE;
     BEGIN
       PERFORM "require_transaction_isolation"();
@@ -3830,8 +3828,8 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
       FOR "battle_row" IN
         SELECT * FROM "battle" WHERE "issue_id" = "issue_id_p"
         ORDER BY
-        "winning_initiative_id" NULLS LAST,
-        "losing_initiative_id" NULLS LAST
+        "winning_initiative_id" NULLS FIRST,
+        "losing_initiative_id" NULLS FIRST
       LOOP
         "vote_matrix"["i"]["j"] := "battle_row"."count";
         IF "j" = "dimension_v" THEN
@@ -3898,9 +3896,7 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
       -- Determine order of winners:
       "rank_ary" := array_fill(NULL::INT4, ARRAY["dimension_v"]);
       "rank_v" := 1;
-      "done_v" := 0;
       LOOP
-        "winners_ary" := '{}';
         "i" := 1;
         LOOP
           IF "rank_ary"["i"] ISNULL THEN
@@ -3909,34 +3905,33 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
               IF
                 "i" != "j" AND
                 "rank_ary"["j"] ISNULL AND
-                "matrix"["j"]["i"] > "matrix"["i"]["j"]
+                ( "matrix"["j"]["i"] > "matrix"["i"]["j"] OR
+                  -- tie-breaking by "id"
+                  ( "matrix"["j"]["i"] = "matrix"["i"]["j"] AND
+                    "j" < "i" ) )
               THEN
                 -- someone else is better
                 EXIT;
               END IF;
-              IF "j" = "dimension_v" THEN
+              "j" := "j" + 1;
+              IF "j" = "dimension_v" + 1 THEN
                 -- noone is better
-                "winners_ary" := "winners_ary" || "i";
+                "rank_ary"["i"] := "rank_v";
                 EXIT;
               END IF;
-              "j" := "j" + 1;
             END LOOP;
+            EXIT WHEN "j" = "dimension_v" + 1;
           END IF;
-          EXIT WHEN "i" = "dimension_v";
           "i" := "i" + 1;
+          IF "i" > "dimension_v" THEN
+            RAISE EXCEPTION 'Schulze ranking does not compute (should not happen)';
+          END IF;
         END LOOP;
-        "i" := 1;
-        LOOP
-          "rank_ary"["winners_ary"["i"]] := "rank_v";
-          "done_v" := "done_v" + 1;
-          EXIT WHEN "i" = array_upper("winners_ary", 1);
-          "i" := "i" + 1;
-        END LOOP;
-        EXIT WHEN "done_v" = "dimension_v";
+        EXIT WHEN "rank_v" = "dimension_v";
         "rank_v" := "rank_v" + 1;
       END LOOP;
       -- write preliminary results:
-      "i" := 1;
+      "i" := 2;  -- omit status quo with "i" = 1
       FOR "initiative_id_v" IN
         SELECT "id" FROM "initiative"
         WHERE "issue_id" = "issue_id_p" AND "admitted"
@@ -3966,17 +3961,17 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
             AND "issue_row"."voter_count"-"negative_votes" >=
                 "policy_row"."indirect_majority_non_negative",
           "schulze_rank"           = "rank_ary"["i"],
-          "better_than_status_quo" = "rank_ary"["i"] < "rank_ary"["dimension_v"],
-          "worse_than_status_quo"  = "rank_ary"["i"] > "rank_ary"["dimension_v"],
-          "multistage_majority"    = "rank_ary"["i"] >= "rank_ary"["dimension_v"],
-          "reverse_beat_path"      = "matrix"["dimension_v"]["i"] >= 0,
+          "better_than_status_quo" = "rank_ary"["i"] < "rank_ary"[1],
+          "worse_than_status_quo"  = "rank_ary"["i"] > "rank_ary"[1],
+          "multistage_majority"    = "rank_ary"["i"] >= "rank_ary"[1],
+          "reverse_beat_path"      = "matrix"[1]["i"] >= 0,
           "eligible"               = FALSE,
           "winner"                 = FALSE,
           "rank"                   = NULL  -- NOTE: in cases of manual reset of issue state
           WHERE "id" = "initiative_id_v";
         "i" := "i" + 1;
       END LOOP;
-      IF "i" != "dimension_v" THEN
+      IF "i" != "dimension_v" + 1 THEN
         RAISE EXCEPTION 'Wrong winner count (should not happen)';
       END IF;
       -- take indirect majorities into account:
@@ -4082,7 +4077,7 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
       END LOOP;
       -- set schulze rank of status quo and mark issue as finished:
       UPDATE "issue" SET
-        "status_quo_schulze_rank" = "rank_ary"["dimension_v"],
+        "status_quo_schulze_rank" = "rank_ary"[1],
         "state" =
           CASE WHEN EXISTS (
             SELECT NULL FROM "initiative"
