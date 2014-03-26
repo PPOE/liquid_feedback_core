@@ -71,8 +71,8 @@ UPDATE "initiative"
   WHERE "initiative"."admitted"
   AND "initiative"."id" = "subquery"."initiative_id";
 
--- reconstruct battle data to avoid future data loss when
--- executing "clean_issue" to delete voting data:
+-- reconstruct battle data (originating from LiquidFeedback Core before v2.0.0)
+-- to avoid future data loss when executing "clean_issue" to delete voting data:
 INSERT INTO "battle" (
     "issue_id",
     "winning_initiative_id",
@@ -83,12 +83,42 @@ INSERT INTO "battle" (
     "battle_view"."winning_initiative_id",
     "battle_view"."losing_initiative_id",
     "battle_view"."count"
-  FROM "battle_view"
+  FROM (
+    SELECT
+      "issue"."id" AS "issue_id",
+      "winning_initiative"."id" AS "winning_initiative_id",
+      "losing_initiative"."id" AS "losing_initiative_id",
+      sum(
+        CASE WHEN
+          coalesce("better_vote"."grade", 0) >
+          coalesce("worse_vote"."grade", 0)
+        THEN "direct_voter"."weight" ELSE 0 END
+      ) AS "count"
+    FROM "issue"
+    LEFT JOIN "direct_voter"
+    ON "issue"."id" = "direct_voter"."issue_id"
+    JOIN "battle_participant" AS "winning_initiative"
+      ON "issue"."id" = "winning_initiative"."issue_id"
+    JOIN "battle_participant" AS "losing_initiative"
+      ON "issue"."id" = "losing_initiative"."issue_id"
+    LEFT JOIN "vote" AS "better_vote"
+      ON "direct_voter"."member_id" = "better_vote"."member_id"
+      AND "winning_initiative"."id" = "better_vote"."initiative_id"
+    LEFT JOIN "vote" AS "worse_vote"
+      ON "direct_voter"."member_id" = "worse_vote"."member_id"
+      AND "losing_initiative"."id" = "worse_vote"."initiative_id"
+    WHERE "issue"."state" IN ('finished_with_winner', 'finished_without_winner')
+    AND "winning_initiative"."id" != "losing_initiative"."id"
+    -- NOTE: comparisons with status-quo are intentionally omitted to mark
+    --       issues that were counted prior LiquidFeedback Core v2.0.0
+    GROUP BY
+      "issue"."id",
+      "winning_initiative"."id",
+      "losing_initiative"."id"
+  ) AS "battle_view"
   LEFT JOIN "battle"
   ON "battle_view"."winning_initiative_id" = "battle"."winning_initiative_id"
   AND "battle_view"."losing_initiative_id" = "battle"."losing_initiative_id"
-  -- NOTE: comparisons with status-quo are intentionally omitted to mark
-  --       issues that were counted prior LiquidFeedback Core v2.0.0
   WHERE "battle" ISNULL;
 
 CREATE OR REPLACE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
