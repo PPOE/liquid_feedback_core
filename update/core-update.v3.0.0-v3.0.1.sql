@@ -71,6 +71,26 @@ UPDATE "initiative"
   WHERE "initiative"."admitted"
   AND "initiative"."id" = "subquery"."initiative_id";
 
+-- reconstruct battle data to avoid future data loss when
+-- executing "clean_issue" to delete voting data:
+INSERT INTO "battle" (
+    "issue_id",
+    "winning_initiative_id",
+    "losing_initiative_id",
+    "count"
+  ) SELECT
+    "battle_view"."issue_id",
+    "battle_view"."winning_initiative_id",
+    "battle_view"."losing_initiative_id",
+    "battle_view"."count"
+  FROM "battle_view"
+  LEFT JOIN "battle"
+  ON "battle_view"."winning_initiative_id" = "battle"."winning_initiative_id"
+  AND "battle_view"."losing_initiative_id" = "battle"."losing_initiative_id"
+  -- NOTE: comparisons with status-quo are intentionally omitted to mark
+  --       issues that were counted prior LiquidFeedback Core v2.0.0
+  WHERE "battle" ISNULL;
+
 CREATE OR REPLACE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
   RETURNS VOID
   LANGUAGE 'plpgsql' VOLATILE AS $$
