@@ -646,6 +646,7 @@ CREATE TABLE "initiative" (
         "satisfied_informed_supporter_count" INT4,
         "harmonic_weight"       NUMERIC(12, 3),
         "final_suggestion_order_calculated" BOOLEAN NOT NULL DEFAULT FALSE,
+        "first_preference_votes" INT4,
         "positive_votes"        INT4,
         "negative_votes"        INT4,
         "direct_majority"       BOOLEAN,
@@ -667,7 +668,8 @@ CREATE TABLE "initiative" (
           CHECK ("revoked" ISNULL OR "admitted" ISNULL),
         CONSTRAINT "non_admitted_initiatives_cant_contain_voting_results" CHECK (
           ( "admitted" NOTNULL AND "admitted" = TRUE ) OR
-          ( "positive_votes" ISNULL AND "negative_votes" ISNULL AND
+          ( "first_preference_votes" ISNULL AND
+            "positive_votes" ISNULL AND "negative_votes" ISNULL AND
             "direct_majority" ISNULL AND "indirect_majority" ISNULL AND
             "schulze_rank" ISNULL AND
             "better_than_status_quo" ISNULL AND "worse_than_status_quo" ISNULL AND
@@ -703,8 +705,9 @@ COMMENT ON COLUMN "initiative"."satisfied_supporter_count"          IS 'Calculat
 COMMENT ON COLUMN "initiative"."satisfied_informed_supporter_count" IS 'Calculated from table "direct_supporter_snapshot"';
 COMMENT ON COLUMN "initiative"."harmonic_weight"        IS 'Indicates the relevancy of the initiative, calculated from the potential supporters weighted with the harmonic series to avoid a large number of clones affecting other initiative''s sorting positions too much; shall be used as secondary sorting key after "admitted" as primary sorting key';
 COMMENT ON COLUMN "initiative"."final_suggestion_order_calculated" IS 'Set to TRUE, when "proportional_order" of suggestions has been calculated the last time';
-COMMENT ON COLUMN "initiative"."positive_votes"         IS 'Calculated from table "direct_voter"';
-COMMENT ON COLUMN "initiative"."negative_votes"         IS 'Calculated from table "direct_voter"';
+COMMENT ON COLUMN "initiative"."first_preference_votes" IS 'Number of direct and delegating voters who ranked this initiative as their first choice';
+COMMENT ON COLUMN "initiative"."positive_votes"         IS 'Number of direct and delegating voters who ranked this initiative better than the status quo';
+COMMENT ON COLUMN "initiative"."negative_votes"         IS 'Number of direct and delegating voters who ranked this initiative worse than the status quo';
 COMMENT ON COLUMN "initiative"."direct_majority"        IS 'TRUE, if "positive_votes"/("positive_votes"+"negative_votes") is strictly greater or greater-equal than "direct_majority_num"/"direct_majority_den", and "positive_votes" is greater-equal than "direct_majority_positive", and ("positive_votes"+abstentions) is greater-equal than "direct_majority_non_negative"';
 COMMENT ON COLUMN "initiative"."indirect_majority"      IS 'Same as "direct_majority", but also considering indirect beat paths';
 COMMENT ON COLUMN "initiative"."schulze_rank"           IS 'Schulze-Ranking';
@@ -1120,15 +1123,19 @@ CREATE TABLE "vote" (
         PRIMARY KEY ("initiative_id", "member_id"),
         "initiative_id"         INT4,
         "member_id"             INT4,
-        "grade"                 INT4,
+        "grade"                 INT4            NOT NULL,
+        "first_preference"      BOOLEAN,
         FOREIGN KEY ("issue_id", "initiative_id") REFERENCES "initiative" ("issue_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
-        FOREIGN KEY ("issue_id", "member_id") REFERENCES "direct_voter" ("issue_id", "member_id") ON DELETE CASCADE ON UPDATE CASCADE );
+        FOREIGN KEY ("issue_id", "member_id") REFERENCES "direct_voter" ("issue_id", "member_id") ON DELETE CASCADE ON UPDATE CASCADE,
+        CONSTRAINT "first_preference_flag_only_set_on_positive_grades"
+          CHECK ("grade" > 0 OR "first_preference" ISNULL) );
 CREATE INDEX "vote_member_id_idx" ON "vote" ("member_id");
 
 COMMENT ON TABLE "vote" IS 'Manual and delegated votes without abstentions; frontends must ensure that no votes are added modified or removed when the issue has been closed; for corrections refer to column "issue_notice" of "issue" table';
 
-COMMENT ON COLUMN "vote"."issue_id" IS 'WARNING: No index: For selections use column "initiative_id" and join via table "initiative" where neccessary';
-COMMENT ON COLUMN "vote"."grade"    IS 'Values smaller than zero mean reject, values greater than zero mean acceptance, zero or missing row means abstention. Preferences are expressed by different positive or negative numbers.';
+COMMENT ON COLUMN "vote"."issue_id"         IS 'WARNING: No index: For selections use column "initiative_id" and join via table "initiative" where neccessary';
+COMMENT ON COLUMN "vote"."grade"            IS 'Values smaller than zero mean reject, values greater than zero mean acceptance, zero or missing row means abstention. Preferences are expressed by different positive or negative numbers.';
+COMMENT ON COLUMN "vote"."first_preference" IS 'Value is automatically set after voting is finished. For positive grades, this value is set to true for the highest (i.e. best) grade.';
 
 
 CREATE TYPE "event_type" AS ENUM (
@@ -3736,6 +3743,22 @@ CREATE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
       UPDATE "direct_voter" SET "weight" = 1
         WHERE "issue_id" = "issue_id_p";
       PERFORM "add_vote_delegations"("issue_id_p");
+      -- mark first preferences:
+      UPDATE "vote" SET "first_preference" = "subquery"."first_preference"
+        FROM (
+          SELECT
+            "vote"."initiative_id",
+            "vote"."member_id",
+            CASE WHEN "vote"."grade" > 0 THEN
+              CASE WHEN "vote"."grade" = max("agg"."grade") THEN TRUE ELSE FALSE END
+            ELSE NULL
+            END AS "first_preference"
+          FROM "vote" JOIN "vote" AS "agg" USING ("issue_id", "member_id")
+          GROUP BY "vote"."initiative_id", "vote"."member_id"
+        ) AS "subquery"
+        WHERE "vote"."issue_id" = "issue_id_p"
+        AND "vote"."initiative_id" = "subquery"."initiative_id"
+        AND "vote"."member_id" = "subquery"."member_id";
       -- finish overriding protection triggers (avoids garbage):
       DELETE FROM "temporary_transaction_data"
         WHERE "key" = 'override_protection_triggers';
@@ -3758,6 +3781,20 @@ CREATE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
           FROM "direct_voter" WHERE "issue_id" = "issue_id_p"
         )
         WHERE "id" = "issue_id_p";
+      -- calculate "first_preference_votes":
+      UPDATE "initiative"
+        SET "first_preference_votes" = coalesce("subquery"."sum", 0)
+        FROM (
+          SELECT "vote"."initiative_id", sum("direct_voter"."weight")
+          FROM "vote" JOIN "direct_voter"
+          ON "vote"."issue_id" = "direct_voter"."issue_id"
+          AND "vote"."member_id" = "direct_voter"."member_id"
+          WHERE "vote"."first_preference"
+          GROUP BY "vote"."initiative_id"
+        ) AS "subquery"
+        WHERE "initiative"."issue_id" = "issue_id_p"
+        AND "initiative"."admitted"
+        AND "initiative"."id" = "subquery"."initiative_id";
       -- copy "positive_votes" and "negative_votes" from "battle" table:
       UPDATE "initiative" SET
         "positive_votes" = "battle_win"."count",
