@@ -3753,7 +3753,12 @@ CREATE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
               CASE WHEN "vote"."grade" = max("agg"."grade") THEN TRUE ELSE FALSE END
             ELSE NULL
             END AS "first_preference"
-          FROM "vote" JOIN "vote" AS "agg" USING ("issue_id", "member_id")
+          FROM "vote"
+          JOIN "initiative"  -- NOTE: due to missing index on issue_id
+          ON "vote"."issue_id" = "initiative"."issue_id"
+          JOIN "vote" AS "agg"
+          ON "initiative"."id" = "agg"."initiative_id"
+          AND "vote"."member_id" = "agg"."member_id"
           GROUP BY "vote"."initiative_id", "vote"."member_id"
         ) AS "subquery"
         WHERE "vote"."issue_id" = "issue_id_p"
