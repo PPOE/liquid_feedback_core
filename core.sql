@@ -7,7 +7,7 @@
 BEGIN;
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('3.0.1', 3, 0, 1))
+  SELECT * FROM (VALUES ('3.0.2', 3, 0, 2))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -348,6 +348,10 @@ COMMENT ON COLUMN "session"."needs_delegation_check" IS 'Set to TRUE, if member 
 COMMENT ON COLUMN "session"."lang"              IS 'Language code of the selected language';
 
 
+CREATE TYPE "schulze_complexity" AS ENUM ('simple', 'tuple', 'full');
+
+COMMENT ON TYPE "schulze_complexity" IS 'Variant of Schulze method to use: ''simple'' = only the number of winning votes in a pairwise comparison is considered, ''tuple'' = the number of winning votes (primarily) as well as the number of losing votes (secondarily) are considered, ''full'' = same as ''tuple'' but with additional tie-breaking';
+
 CREATE TABLE "policy" (
         "id"                    SERIAL4         PRIMARY KEY,
         "index"                 INT4            NOT NULL,
@@ -363,6 +367,7 @@ CREATE TABLE "policy" (
         "issue_quorum_den"      INT4,
         "initiative_quorum_num" INT4            NOT NULL,
         "initiative_quorum_den" INT4            NOT NULL,
+        "schulze_complexity"    "schulze_complexity" NOT NULL DEFAULT 'full',
         "direct_majority_num"           INT4    NOT NULL DEFAULT 1,
         "direct_majority_den"           INT4    NOT NULL DEFAULT 2,
         "direct_majority_strict"        BOOLEAN NOT NULL DEFAULT TRUE,
@@ -403,6 +408,7 @@ COMMENT ON COLUMN "policy"."issue_quorum_num"      IS   'Numerator of potential 
 COMMENT ON COLUMN "policy"."issue_quorum_den"      IS 'Denominator of potential supporter quorum to be reached by one initiative of an issue to be "accepted" and enter issue state ''discussion''';
 COMMENT ON COLUMN "policy"."initiative_quorum_num" IS   'Numerator of satisfied supporter quorum  to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."initiative_quorum_den" IS 'Denominator of satisfied supporter quorum to be reached by an initiative to be "admitted" for voting';
+COMMENT ON COLUMN "policy"."schulze_complexity"    IS 'Variant of Schulze method to use; see type "schulze_complexity"';
 COMMENT ON COLUMN "policy"."direct_majority_num"            IS 'Numerator of fraction of neccessary direct majority for initiatives to be attainable as winner';
 COMMENT ON COLUMN "policy"."direct_majority_den"            IS 'Denominator of fraction of neccessary direct majority for initaitives to be attainable as winner';
 COMMENT ON COLUMN "policy"."direct_majority_strict"         IS 'If TRUE, then the direct majority must be strictly greater than "direct_majority_num"/"direct_majority_den", otherwise it may also be equal.';
@@ -3836,6 +3842,28 @@ CREATE FUNCTION "defeat_strength"
   $$;
 
 COMMENT ON FUNCTION "defeat_strength"(INT4, INT4) IS 'Calculates defeat strength (INT8!) of a pairwise defeat primarily by the absolute number of votes for the winner and secondarily by the absolute number of votes for the loser';
+
+
+CREATE FUNCTION "secondary_link_strength"
+  ( "initiative_id1_p" "initiative"."id"%TYPE,
+    "initiative_id2_p" "initiative"."id"%TYPE )
+  RETURNS INT8
+  LANGUAGE 'plpgsql' IMMUTABLE AS $$
+    BEGIN
+      IF "initiative_id1_p" = "initiative_id2_p" THEN
+        RAISE EXCEPTION 'Identical initiative ids passed to "secondary_link_strength" function (should not happen)';
+      END IF;
+      RETURN (
+        CASE WHEN "initiative_id1_p" < "initiative_id2_p" THEN
+          1::INT8 << 62
+        ELSE 0 END
+        - ("initiative_id1_p"::INT8 << 31)
+        + "initiative_id2_p"::INT8
+      );
+    END;
+  $$;
+
+COMMENT ON FUNCTION "secondary_link_strength"(INT4, INT4) IS 'Calculates a secondary criterion for the defeat strength (tie-breaking of the links)';
 
 
 CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
