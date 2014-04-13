@@ -348,9 +348,16 @@ COMMENT ON COLUMN "session"."needs_delegation_check" IS 'Set to TRUE, if member 
 COMMENT ON COLUMN "session"."lang"              IS 'Language code of the selected language';
 
 
-CREATE TYPE "schulze_complexity" AS ENUM ('simple', 'tuple', 'full');
+CREATE TYPE "defeat_strength" AS ENUM ('simple', 'tuple');
 
-COMMENT ON TYPE "schulze_complexity" IS 'Variant of Schulze method to use: ''simple'' = only the number of winning votes in a pairwise comparison is considered, ''tuple'' = the number of winning votes (primarily) as well as the number of losing votes (secondarily) are considered, ''full'' = same as ''tuple'' but with additional tie-breaking';
+COMMENT ON TYPE "defeat_strength" IS 'How pairwise defeats are measured for the Schulze method: ''simple'' = only the number of winning votes, ''tuple'' = primarily the number of winning votes, secondarily the number of losing votes';
+
+
+CREATE TYPE "tie_breaking" AS ENUM ('simple', 'variant1', 'variant2');
+
+COMMENT ON TYPE "tie_breaking" IS 'Tie-breaker for the Schulze method: ''simple'' = only initiative ids are used, ''variant1'' = use initiative ids in variant 1 for tie breaking of the links (TBRL) and sequentially forbid shared links, ''variant2'' = use initiative ids in variant 2 for tie breaking of the links (TBRL) and sequentially forbid shared links';
+
+
 
 CREATE TABLE "policy" (
         "id"                    SERIAL4         PRIMARY KEY,
@@ -367,7 +374,8 @@ CREATE TABLE "policy" (
         "issue_quorum_den"      INT4,
         "initiative_quorum_num" INT4            NOT NULL,
         "initiative_quorum_den" INT4            NOT NULL,
-        "schulze_complexity"    "schulze_complexity" NOT NULL DEFAULT 'full',
+        "defeat_strength"     "defeat_strength" NOT NULL DEFAULT 'tuple',
+        "tie_breaking"          "tie_breaking"  NOT NULL DEFAULT 'variant1',
         "direct_majority_num"           INT4    NOT NULL DEFAULT 1,
         "direct_majority_den"           INT4    NOT NULL DEFAULT 2,
         "direct_majority_strict"        BOOLEAN NOT NULL DEFAULT TRUE,
@@ -408,7 +416,8 @@ COMMENT ON COLUMN "policy"."issue_quorum_num"      IS   'Numerator of potential 
 COMMENT ON COLUMN "policy"."issue_quorum_den"      IS 'Denominator of potential supporter quorum to be reached by one initiative of an issue to be "accepted" and enter issue state ''discussion''';
 COMMENT ON COLUMN "policy"."initiative_quorum_num" IS   'Numerator of satisfied supporter quorum  to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."initiative_quorum_den" IS 'Denominator of satisfied supporter quorum to be reached by an initiative to be "admitted" for voting';
-COMMENT ON COLUMN "policy"."schulze_complexity"    IS 'Variant of Schulze method to use; see type "schulze_complexity"';
+COMMENT ON COLUMN "policy"."defeat_strength"       IS 'How pairwise defeats are measured for the Schulze method; see type "defeat_strength"';
+COMMENT ON COLUMN "policy"."tie_breaking"          IS 'Tie-breaker for the Schulze method; see type "tie_breaking"';
 COMMENT ON COLUMN "policy"."direct_majority_num"            IS 'Numerator of fraction of neccessary direct majority for initiatives to be attainable as winner';
 COMMENT ON COLUMN "policy"."direct_majority_den"            IS 'Denominator of fraction of neccessary direct majority for initaitives to be attainable as winner';
 COMMENT ON COLUMN "policy"."direct_majority_strict"         IS 'If TRUE, then the direct majority must be strictly greater than "direct_majority_num"/"direct_majority_den", otherwise it may also be equal.';
@@ -3827,26 +3836,37 @@ COMMENT ON FUNCTION "close_voting"
 
 
 CREATE FUNCTION "defeat_strength"
-  ( "positive_votes_p" INT4, "negative_votes_p" INT4 )
+  ( "positive_votes_p"  INT4,
+    "negative_votes_p"  INT4,
+    "defeat_strength_p" "defeat_strength" )
   RETURNS INT8
   LANGUAGE 'plpgsql' IMMUTABLE AS $$
     BEGIN
-      IF "positive_votes_p" > "negative_votes_p" THEN
-        RETURN ("positive_votes_p"::INT8 << 31) - "negative_votes_p"::INT8;
-      ELSIF "positive_votes_p" = "negative_votes_p" THEN
-        RETURN 0;
+      IF "defeat_strength_p" = 'simple'::"defeat_strength" THEN
+        IF "positive_votes_p" > "negative_votes_p" THEN
+          RETURN "positive_votes_p";
+        ELSE
+          RETURN 0;
+        END IF;
       ELSE
-        RETURN -1;
+        IF "positive_votes_p" > "negative_votes_p" THEN
+          RETURN ("positive_votes_p"::INT8 << 31) - "negative_votes_p"::INT8;
+        ELSIF "positive_votes_p" = "negative_votes_p" THEN
+          RETURN 0;
+        ELSE
+          RETURN -1;
+        END IF;
       END IF;
     END;
   $$;
 
-COMMENT ON FUNCTION "defeat_strength"(INT4, INT4) IS 'Calculates defeat strength (INT8!) of a pairwise defeat primarily by the absolute number of votes for the winner and secondarily by the absolute number of votes for the loser';
+COMMENT ON FUNCTION "defeat_strength"(INT4, INT4, "defeat_strength") IS 'Calculates defeat strength (INT8!) of a pairwise defeat primarily by the absolute number of votes for the winner and secondarily by the absolute number of votes for the loser';
 
 
 CREATE FUNCTION "secondary_link_strength"
   ( "initiative_id1_p" "initiative"."id"%TYPE,
-    "initiative_id2_p" "initiative"."id"%TYPE )
+    "initiative_id2_p" "initiative"."id"%TYPE,
+    "tie_breaking_p"   "tie_breaking" )
   RETURNS INT8
   LANGUAGE 'plpgsql' IMMUTABLE AS $$
     BEGIN
@@ -3857,13 +3877,17 @@ CREATE FUNCTION "secondary_link_strength"
         CASE WHEN "initiative_id1_p" < "initiative_id2_p" THEN
           1::INT8 << 62
         ELSE 0 END
-        - ("initiative_id1_p"::INT8 << 31)
-        + "initiative_id2_p"::INT8
+        +
+        CASE WHEN "tie_breaking_p" = 'variant2'::"tie_breaking" THEN
+          ("initiative_id2_p"::INT8 << 31) - "initiative_id1_p"::INT8
+        ELSE
+          "initiative_id2_p"::INT8 - ("initiative_id1_p"::INT8 << 31)
+        END
       );
     END;
   $$;
 
-COMMENT ON FUNCTION "secondary_link_strength"(INT4, INT4) IS 'Calculates a secondary criterion for the defeat strength (tie-breaking of the links)';
+COMMENT ON FUNCTION "secondary_link_strength"(INT4, INT4, "tie_breaking") IS 'Calculates a secondary criterion for the defeat strength (tie-breaking of the links)';
 
 
 CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
@@ -3925,7 +3949,8 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
           IF "i" != "j" THEN
             "matrix"["i"]["j"] := "defeat_strength"(
               "vote_matrix"["i"]["j"],
-              "vote_matrix"["j"]["i"]
+              "vote_matrix"["j"]["i"],
+              "policy_row"."defeat_strength"
             );
           END IF;
           EXIT WHEN "j" = "dimension_v";
