@@ -415,8 +415,8 @@ COMMENT ON COLUMN "policy"."issue_quorum_num"      IS   'Numerator of potential 
 COMMENT ON COLUMN "policy"."issue_quorum_den"      IS 'Denominator of potential supporter quorum to be reached by one initiative of an issue to be "accepted" and enter issue state ''discussion''';
 COMMENT ON COLUMN "policy"."initiative_quorum_num" IS   'Numerator of satisfied supporter quorum  to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."initiative_quorum_den" IS 'Denominator of satisfied supporter quorum to be reached by an initiative to be "admitted" for voting';
-COMMENT ON COLUMN "policy"."defeat_strength"       IS 'How pairwise defeats are measured for the Schulze method; see type "defeat_strength"';
-COMMENT ON COLUMN "policy"."tie_breaking"          IS 'Tie-breaker for the Schulze method; see type "tie_breaking"';
+COMMENT ON COLUMN "policy"."defeat_strength"       IS 'How pairwise defeats are measured for the Schulze method; see type "defeat_strength"; ''tuple'' is the recommended setting';
+COMMENT ON COLUMN "policy"."tie_breaking"          IS 'Tie-breaker for the Schulze method; see type "tie_breaking"; ''variant1'' or ''variant2'' are recommended';
 COMMENT ON COLUMN "policy"."direct_majority_num"            IS 'Numerator of fraction of neccessary direct majority for initiatives to be attainable as winner';
 COMMENT ON COLUMN "policy"."direct_majority_den"            IS 'Denominator of fraction of neccessary direct majority for initaitives to be attainable as winner';
 COMMENT ON COLUMN "policy"."direct_majority_strict"         IS 'If TRUE, then the direct majority must be strictly greater than "direct_majority_num"/"direct_majority_den", otherwise it may also be equal.';
@@ -3894,7 +3894,7 @@ CREATE TYPE "link_strength" AS (
         "primary"               INT8,
         "secondary"             INT8 );
 
-COMMENT ON TYPE "link_strength" IS 'TODO';
+COMMENT ON TYPE "link_strength" IS 'Type to store the defeat strength of a link between two candidates plus a secondary criterion to create unique link strengths between the candidates (needed for tie-breaking ''variant1'' and ''variant2'')';
 
 
 CREATE FUNCTION "find_best_paths"("matrix_d" "link_strength"[][])
@@ -3941,7 +3941,7 @@ CREATE FUNCTION "find_best_paths"("matrix_d" "link_strength"[][])
     END;
   $$;
 
-COMMENT ON FUNCTION "find_best_paths"("link_strength"[][]) IS 'TODO';
+COMMENT ON FUNCTION "find_best_paths"("link_strength"[][]) IS 'Computes the strengths of the best beat-paths from a square matrix';
 
 
 CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
@@ -3973,7 +3973,7 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
         FROM "policy" WHERE "id" = "issue_row"."policy_id";
       SELECT count(1) INTO "dimension_v"
         FROM "battle_participant" WHERE "issue_id" = "issue_id_p";
-      -- Create "matrix_a" with absolute number of votes in pairwise
+      -- create "matrix_a" with absolute number of votes in pairwise
       -- comparison:
       "matrix_a" := array_fill(NULL::INT4, ARRAY["dimension_v", "dimension_v"]);
       "i" := 1;
@@ -3998,7 +3998,7 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
       IF "i" != "dimension_v" OR "j" != "dimension_v" + 1 THEN
         RAISE EXCEPTION 'Wrong battle count (should not happen)';
       END IF;
-      -- Store direct defeat strengths in "matrix_d" using "defeat_strength"
+      -- store direct defeat strengths in "matrix_d" using "defeat_strength"
       -- and "secondary_link_strength" functions:
       "matrix_d" := array_fill(NULL::INT8, ARRAY["dimension_v", "dimension_v"]);
       "i" := 1;
@@ -4025,9 +4025,9 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
         EXIT WHEN "i" = "dimension_v";
         "i" := "i" + 1;
       END LOOP;
-      -- Find best paths:
+      -- find best paths:
       "matrix_p" := "find_best_paths"("matrix_d");
-      -- Create partial order:
+      -- create partial order:
       "matrix_b" := array_fill(NULL::BOOLEAN, ARRAY["dimension_v", "dimension_v"]);
       "i" := 1;
       LOOP
@@ -4048,16 +4048,24 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
         EXIT WHEN "i" = "dimension_v" - 1;
         "i" := "i" + 1;
       END LOOP;
-      -- Tie-breaking:
+      -- tie-breaking by forbidding shared weakest links in beat-paths
+      -- (unless "tie_breaking" is set to 'simple', in which case tie-breaking
+      -- is performed later by initiative id):
       IF "policy_row"."tie_breaking" != 'simple'::"tie_breaking" THEN
         "m" := 1;
         LOOP
           "n" := "m" + 1;
           LOOP
+            -- only process those candidates m and n, which are tied:
             IF "matrix_b"["m"]["n"] ISNULL THEN
+              -- start with beat-paths prior tie-breaking:
               "matrix_t" := "matrix_p";
+              -- start with all links allowed:
               "matrix_f" := array_fill(FALSE, ARRAY["dimension_v", "dimension_v"]);
               LOOP
+                -- determine (and forbid) that link that is the weakest link
+                -- in both the best path from candidate m to candidate n and
+                -- from candidate n to candidate m:
                 "i" := 1;
                 <<forbid_one_link>>
                 LOOP
@@ -4067,7 +4075,7 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
                       IF "matrix_d"["i"]["j"] = "matrix_t"["m"]["n"] THEN
                         "matrix_f"["i"]["j"] := TRUE;
                         -- exit for performance reasons,
-                        -- as only one link will be found:
+                        -- as exactly one link will be found:
                         EXIT forbid_one_link;
                       END IF;
                     END IF;
@@ -4075,10 +4083,11 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
                     "j" := "j" + 1;
                   END LOOP;
                   IF "i" = "dimension_v" THEN
-                    RAISE EXCEPTION 'Schulze tie-breaking does not compute (should not happen)';
+                    RAISE EXCEPTION 'Did not find shared weakest link for tie-breaking (should not happen)';
                   END IF;
                   "i" := "i" + 1;
                 END LOOP;
+                -- calculate best beat-paths while ignoring forbidden links:
                 "i" := 1;
                 LOOP
                   "j" := 1;
@@ -4086,7 +4095,7 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
                     IF "i" != "j" THEN
                       "matrix_t"["i"]["j"] := CASE
                          WHEN "matrix_f"["i"]["j"]
-                         THEN (-1::INT8) << 63
+                         THEN (-1::INT8) << 63  -- worst possible value
                          ELSE "matrix_d"["i"]["j"] END;
                     END IF;
                     EXIT WHEN "j" = "dimension_v";
@@ -4096,6 +4105,7 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
                   "i" := "i" + 1;
                 END LOOP;
                 "matrix_t" := "find_best_paths"("matrix_t");
+                -- extend partial order, if tie-breaking was successful:
                 IF "matrix_t"["m"]["n"] > "matrix_t"["n"]["m"] THEN
                   "matrix_b"["m"]["n"] := TRUE;
                   "matrix_b"["n"]["m"] := FALSE;
@@ -4114,11 +4124,12 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
           "m" := "m" + 1;
         END LOOP;
       END IF;
-      -- Determine order of winners:
+      -- store a unique ranking in "rank_ary":
       "rank_ary" := array_fill(NULL::INT4, ARRAY["dimension_v"]);
       "rank_v" := 1;
       LOOP
         "i" := 1;
+        <<assign_next_rank>>
         LOOP
           IF "rank_ary"["i"] ISNULL THEN
             "j" := 1;
@@ -4134,14 +4145,13 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
                 -- someone else is better
                 EXIT;
               END IF;
-              "j" := "j" + 1;
-              IF "j" = "dimension_v" + 1 THEN
+              IF "j" = "dimension_v" THEN
                 -- noone is better
                 "rank_ary"["i"] := "rank_v";
-                EXIT;
+                EXIT assign_next_rank;
               END IF;
+              "j" := "j" + 1;
             END LOOP;
-            EXIT WHEN "j" = "dimension_v" + 1;
           END IF;
           "i" := "i" + 1;
           IF "i" > "dimension_v" THEN
