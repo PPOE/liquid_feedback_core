@@ -3894,24 +3894,77 @@ CREATE TYPE "link_strength" AS (
         "primary"               INT8,
         "secondary"             INT8 );
 
+COMMENT ON TYPE "link_strength" IS 'TODO';
+
+
+CREATE FUNCTION "find_best_paths"("matrix_d" "link_strength"[][])
+  RETURNS "link_strength"[][]
+  LANGUAGE 'plpgsql' IMMUTABLE AS $$
+    DECLARE
+      "dimension_v" INT4;
+      "matrix_p"    "link_strength"[][];
+      "i"           INT4;
+      "j"           INT4;
+      "k"           INT4;
+    BEGIN
+      "dimension_v" := array_upper("matrix_d", 1);
+      "matrix_p" := "matrix_d";
+      "i" := 1;
+      LOOP
+        "j" := 1;
+        LOOP
+          IF "i" != "j" THEN
+            "k" := 1;
+            LOOP
+              IF "i" != "k" AND "j" != "k" THEN
+                IF "matrix_p"["j"]["i"] < "matrix_p"["i"]["k"] THEN
+                  IF "matrix_p"["j"]["i"] > "matrix_p"["j"]["k"] THEN
+                    "matrix_p"["j"]["k"] := "matrix_p"["j"]["i"];
+                  END IF;
+                ELSE
+                  IF "matrix_p"["i"]["k"] > "matrix_p"["j"]["k"] THEN
+                    "matrix_p"["j"]["k"] := "matrix_p"["i"]["k"];
+                  END IF;
+                END IF;
+              END IF;
+              EXIT WHEN "k" = "dimension_v";
+              "k" := "k" + 1;
+            END LOOP;
+          END IF;
+          EXIT WHEN "j" = "dimension_v";
+          "j" := "j" + 1;
+        END LOOP;
+        EXIT WHEN "i" = "dimension_v";
+        "i" := "i" + 1;
+      END LOOP;
+      RETURN "matrix_p";
+    END;
+  $$;
+
+COMMENT ON FUNCTION "find_best_paths"("link_strength"[][]) IS 'TODO';
 
 
 CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
   RETURNS VOID
   LANGUAGE 'plpgsql' VOLATILE AS $$
     DECLARE
-      "issue_row"         "issue"%ROWTYPE;
-      "policy_row"        "policy"%ROWTYPE;
-      "dimension_v"       INT4;
-      "vote_matrix"       INT4[][];  -- absolute votes
-      "matrix"            "link_strength"[][];  -- defeat strength / best paths
-      "i"                 INT4;
-      "j"                 INT4;
-      "k"                 INT4;
-      "battle_row"        "battle"%ROWTYPE;
-      "rank_ary"          INT4[];
-      "rank_v"            INT4;
-      "initiative_id_v"   "initiative"."id"%TYPE;
+      "issue_row"       "issue"%ROWTYPE;
+      "policy_row"      "policy"%ROWTYPE;
+      "dimension_v"     INT4;
+      "matrix_a"        INT4[][];  -- absolute votes
+      "matrix_d"        "link_strength"[][];  -- defeat strength (direct)
+      "matrix_p"        "link_strength"[][];  -- defeat strength (best path)
+      "matrix_t"        "link_strength"[][];  -- defeat strength (tie-breaking)
+      "matrix_f"        BOOLEAN[][];  -- forbidden link (tie-breaking)
+      "matrix_b"        BOOLEAN[][];  -- final order (who beats who)
+      "i"               INT4;
+      "j"               INT4;
+      "m"               INT4;
+      "n"               INT4;
+      "battle_row"      "battle"%ROWTYPE;
+      "rank_ary"        INT4[];
+      "rank_v"          INT4;
+      "initiative_id_v" "initiative"."id"%TYPE;
     BEGIN
       PERFORM "require_transaction_isolation"();
       SELECT * INTO "issue_row"
@@ -3920,9 +3973,9 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
         FROM "policy" WHERE "id" = "issue_row"."policy_id";
       SELECT count(1) INTO "dimension_v"
         FROM "battle_participant" WHERE "issue_id" = "issue_id_p";
-      -- Create "vote_matrix" with absolute number of votes in pairwise
+      -- Create "matrix_a" with absolute number of votes in pairwise
       -- comparison:
-      "vote_matrix" := array_fill(NULL::INT4, ARRAY["dimension_v", "dimension_v"]);
+      "matrix_a" := array_fill(NULL::INT4, ARRAY["dimension_v", "dimension_v"]);
       "i" := 1;
       "j" := 2;
       FOR "battle_row" IN
@@ -3931,7 +3984,7 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
         "winning_initiative_id" NULLS FIRST,
         "losing_initiative_id" NULLS FIRST
       LOOP
-        "vote_matrix"["i"]["j"] := "battle_row"."count";
+        "matrix_a"["i"]["j"] := "battle_row"."count";
         IF "j" = "dimension_v" THEN
           "i" := "i" + 1;
           "j" := 1;
@@ -3945,18 +3998,18 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
       IF "i" != "dimension_v" OR "j" != "dimension_v" + 1 THEN
         RAISE EXCEPTION 'Wrong battle count (should not happen)';
       END IF;
-      -- Store defeat strengths in "matrix" using "defeat_strength"
-      -- function:
-      "matrix" := array_fill(NULL::INT8, ARRAY["dimension_v", "dimension_v"]);
+      -- Store direct defeat strengths in "matrix_d" using "defeat_strength"
+      -- and "secondary_link_strength" functions:
+      "matrix_d" := array_fill(NULL::INT8, ARRAY["dimension_v", "dimension_v"]);
       "i" := 1;
       LOOP
         "j" := 1;
         LOOP
           IF "i" != "j" THEN
-            "matrix"["i"]["j"] := (
+            "matrix_d"["i"]["j"] := (
               "defeat_strength"(
-                "vote_matrix"["i"]["j"],
-                "vote_matrix"["j"]["i"],
+                "matrix_a"["i"]["j"],
+                "matrix_a"["j"]["i"],
                 "policy_row"."defeat_strength"
               ),
               "secondary_link_strength"(
@@ -3973,34 +4026,94 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
         "i" := "i" + 1;
       END LOOP;
       -- Find best paths:
+      "matrix_p" := "find_best_paths"("matrix_d");
+      -- Create partial order:
+      "matrix_b" := array_fill(NULL::BOOLEAN, ARRAY["dimension_v", "dimension_v"]);
       "i" := 1;
       LOOP
-        "j" := 1;
+        "j" := "i" + 1;
         LOOP
           IF "i" != "j" THEN
-            "k" := 1;
-            LOOP
-              IF "i" != "k" AND "j" != "k" THEN
-                IF "matrix"["j"]["i"] < "matrix"["i"]["k"] THEN
-                  IF "matrix"["j"]["i"] > "matrix"["j"]["k"] THEN
-                    "matrix"["j"]["k"] := "matrix"["j"]["i"];
-                  END IF;
-                ELSE
-                  IF "matrix"["i"]["k"] > "matrix"["j"]["k"] THEN
-                    "matrix"["j"]["k"] := "matrix"["i"]["k"];
-                  END IF;
-                END IF;
-              END IF;
-              EXIT WHEN "k" = "dimension_v";
-              "k" := "k" + 1;
-            END LOOP;
+            IF "matrix_p"["i"]["j"] > "matrix_p"["j"]["i"] THEN
+              "matrix_b"["i"]["j"] := TRUE;
+              "matrix_b"["j"]["i"] := FALSE;
+            ELSIF "matrix_p"["i"]["j"] < "matrix_p"["j"]["i"] THEN
+              "matrix_b"["i"]["j"] := FALSE;
+              "matrix_b"["j"]["i"] := TRUE;
+            END IF;
           END IF;
           EXIT WHEN "j" = "dimension_v";
           "j" := "j" + 1;
         END LOOP;
-        EXIT WHEN "i" = "dimension_v";
+        EXIT WHEN "i" = "dimension_v" - 1;
         "i" := "i" + 1;
       END LOOP;
+      -- Tie-breaking:
+      IF "policy_row"."tie_breaking" != 'simple'::"tie_breaking" THEN
+        "m" := 1;
+        LOOP
+          "n" := "m" + 1;
+          LOOP
+            IF "matrix_b"["m"]["n"] ISNULL THEN
+              "matrix_t" := "matrix_p";
+              "matrix_f" := array_fill(FALSE, ARRAY["dimension_v", "dimension_v"]);
+              LOOP
+                "i" := 1;
+                <<forbid_one_link>>
+                LOOP
+                  "j" := 1;
+                  LOOP
+                    IF "i" != "j" THEN
+                      IF "matrix_d"["i"]["j"] = "matrix_t"["m"]["n"] THEN
+                        "matrix_f"["i"]["j"] := TRUE;
+                        -- exit for performance reasons,
+                        -- as only one link will be found:
+                        EXIT forbid_one_link;
+                      END IF;
+                    END IF;
+                    EXIT WHEN "j" = "dimension_v";
+                    "j" := "j" + 1;
+                  END LOOP;
+                  IF "i" = "dimension_v" THEN
+                    RAISE EXCEPTION 'Schulze tie-breaking does not compute (should not happen)';
+                  END IF;
+                  "i" := "i" + 1;
+                END LOOP;
+                "i" := 1;
+                LOOP
+                  "j" := 1;
+                  LOOP
+                    IF "i" != "j" THEN
+                      "matrix_t"["i"]["j"] := CASE
+                         WHEN "matrix_f"["i"]["j"]
+                         THEN (-1::INT8) << 63
+                         ELSE "matrix_d"["i"]["j"] END;
+                    END IF;
+                    EXIT WHEN "j" = "dimension_v";
+                    "j" := "j" + 1;
+                  END LOOP;
+                  EXIT WHEN "i" = "dimension_v";
+                  "i" := "i" + 1;
+                END LOOP;
+                "matrix_t" := "find_best_paths"("matrix_t");
+                IF "matrix_t"["m"]["n"] > "matrix_t"["n"]["m"] THEN
+                  "matrix_b"["m"]["n"] := TRUE;
+                  "matrix_b"["n"]["m"] := FALSE;
+                  EXIT;
+                ELSIF "matrix_t"["m"]["n"] < "matrix_t"["n"]["m"] THEN
+                  "matrix_b"["m"]["n"] := FALSE;
+                  "matrix_b"["n"]["m"] := TRUE;
+                  EXIT;
+                END IF;
+              END LOOP;
+            END IF;
+            EXIT WHEN "n" = "dimension_v";
+            "n" := "n" + 1;
+          END LOOP;
+          EXIT WHEN "m" = "dimension_v" - 1;
+          "m" := "m" + 1;
+        END LOOP;
+      END IF;
       -- Determine order of winners:
       "rank_ary" := array_fill(NULL::INT4, ARRAY["dimension_v"]);
       "rank_v" := 1;
@@ -4013,9 +4126,9 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
               IF
                 "i" != "j" AND
                 "rank_ary"["j"] ISNULL AND
-                ( "matrix"["j"]["i"] > "matrix"["i"]["j"] OR
+                ( "matrix_b"["j"]["i"] OR
                   -- tie-breaking by "id"
-                  ( "matrix"["j"]["i"] = "matrix"["i"]["j"] AND
+                  ( "matrix_b"["j"]["i"] ISNULL AND
                     "j" < "i" ) )
               THEN
                 -- someone else is better
