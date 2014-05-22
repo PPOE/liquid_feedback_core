@@ -44,7 +44,7 @@ INSERT INTO "policy" (
     "issue_quorum_num", "issue_quorum_den",
     "initiative_quorum_num", "initiative_quorum_den",
     "direct_majority_num", "direct_majority_den", "direct_majority_strict",
-    "no_multistage_majority"
+    "no_reverse_beat_path", "no_multistage_majority"
   ) VALUES (
     1,
     'Default policy',
@@ -52,7 +52,7 @@ INSERT INTO "policy" (
     25, 100,
     20, 100,
     1, 2, TRUE,
-    FALSE );
+    TRUE, FALSE );
 
 CREATE FUNCTION "time_warp"() RETURNS VOID
   LANGUAGE 'plpgsql' VOLATILE AS $$

@@ -386,6 +386,7 @@ CREATE TABLE "policy" (
         "indirect_majority_strict"      BOOLEAN NOT NULL DEFAULT TRUE,
         "indirect_majority_positive"    INT4    NOT NULL DEFAULT 0,
         "indirect_majority_non_negative" INT4   NOT NULL DEFAULT 0,
+        "no_reverse_beat_path"          BOOLEAN NOT NULL DEFAULT FALSE,
         "no_multistage_majority"        BOOLEAN NOT NULL DEFAULT FALSE,
         CONSTRAINT "timing" CHECK (
           ( "polling" = FALSE AND
@@ -399,7 +400,10 @@ CREATE TABLE "policy" (
             "verification_time" ISNULL AND "voting_time" ISNULL ) ),
         CONSTRAINT "issue_quorum_if_and_only_if_not_polling" CHECK (
           "polling" = "issue_quorum_num" ISNULL AND
-          "polling" = "issue_quorum_den" ISNULL ) );
+          "polling" = "issue_quorum_den" ISNULL ),
+        CONSTRAINT "no_reverse_beat_path_requires_tuple_defeat_strength" CHECK (
+          "defeat_strength" = 'tuple'::"defeat_strength" OR
+          "no_reverse_beat_path" = FALSE ) );
 CREATE INDEX "policy_active_idx" ON "policy" ("active");
 
 COMMENT ON TABLE "policy" IS 'Policies for a particular proceeding type (timelimits, quorum)';
@@ -427,7 +431,8 @@ COMMENT ON COLUMN "policy"."indirect_majority_den"          IS 'Denominator of f
 COMMENT ON COLUMN "policy"."indirect_majority_strict"       IS 'If TRUE, then the indirect majority must be strictly greater than "indirect_majority_num"/"indirect_majority_den", otherwise it may also be equal.';
 COMMENT ON COLUMN "policy"."indirect_majority_positive"     IS 'Absolute number of votes in favor of the winner neccessary in a beat path to the status quo for an initaitive to be attainable as winner';
 COMMENT ON COLUMN "policy"."indirect_majority_non_negative" IS 'Absolute number of sum of votes in favor and abstentions in a beat path to the status quo for an initiative to be attainable as winner';
-COMMENT ON COLUMN "policy"."no_multistage_majority" IS 'EXPERIMENTAL FEATURE: Causes initiatives with "multistage_majority" flag to not be "eligible", thus disallowing them to be winner. See comment on column "initiative"."multistage_majority". This disqualifies initiatives which could cause an instable result. An instable result in this meaning is a result such that repeating the ballot with same preferences but with the winner of the first ballot as status quo would lead to a different winner in the second ballot.';
+COMMENT ON COLUMN "policy"."no_reverse_beat_path" IS 'EXPERIMENTAL FEATURE: Causes initiatives with "reverse_beat_path" flag to not be "eligible", thus disallowing them to be winner. See comment on column "initiative"."reverse_beat_path". This option ensures both that a winning initiative is never tied in a (weak) condorcet paradox with the status quo and a winning initiative always beats the status quo directly with a simple majority.';
+COMMENT ON COLUMN "policy"."no_multistage_majority" IS 'EXPERIMENTAL FEATURE: Causes initiatives with "multistage_majority" flag to not be "eligible", thus disallowing them to be winner. See comment on column "initiative"."multistage_majority". This disqualifies initiatives which could cause an instable result. An instable result in this meaning is a result such that repeating the ballot with same preferences but with the winner of the first ballot as status quo would lead to a different winner in the second ballot. If there are no direct majorities required for the winner, or if in direct comparison only simple majorities are required and "no_reverse_beat_path" is true, then results are always stable and this flag does not have any effect on the winner (but still affects the "eligible" flag of an "initiative").';
 
 
 CREATE TABLE "unit" (
@@ -667,6 +672,7 @@ CREATE TABLE "initiative" (
         "schulze_rank"          INT4,
         "better_than_status_quo" BOOLEAN,
         "worse_than_status_quo" BOOLEAN,
+        "reverse_beat_path"     BOOLEAN,
         "multistage_majority"   BOOLEAN,
         "eligible"              BOOLEAN,
         "winner"                BOOLEAN,
@@ -685,7 +691,7 @@ CREATE TABLE "initiative" (
             "direct_majority" ISNULL AND "indirect_majority" ISNULL AND
             "schulze_rank" ISNULL AND
             "better_than_status_quo" ISNULL AND "worse_than_status_quo" ISNULL AND
-            "multistage_majority" ISNULL AND
+            "reverse_beat_path" ISNULL AND "multistage_majority" ISNULL AND
             "eligible" ISNULL AND "winner" ISNULL AND "rank" ISNULL ) ),
         CONSTRAINT "better_excludes_worse" CHECK (NOT ("better_than_status_quo" AND "worse_than_status_quo")),
         CONSTRAINT "minimum_requirement_to_be_eligible" CHECK (
@@ -725,8 +731,9 @@ COMMENT ON COLUMN "initiative"."indirect_majority"      IS 'Same as "direct_majo
 COMMENT ON COLUMN "initiative"."schulze_rank"           IS 'Schulze-Ranking';
 COMMENT ON COLUMN "initiative"."better_than_status_quo" IS 'TRUE, if initiative has a schulze-ranking better than the status quo';
 COMMENT ON COLUMN "initiative"."worse_than_status_quo"  IS 'TRUE, if initiative has a schulze-ranking worse than the status quo (DEPRECATED, since schulze-ranking is unique per issue; use "better_than_status_quo"=FALSE)';
+COMMENT ON COLUMN "initiative"."reverse_beat_path"      IS 'TRUE, if there is a beat path (may include ties) from this initiative to the status quo; set to NULL if "policy"."defeat_strength" is set to ''simple''';
 COMMENT ON COLUMN "initiative"."multistage_majority"    IS 'TRUE, if either (a) this initiative has no better rank than the status quo, or (b) there exists a better ranked initiative X, which directly beats this initiative, and either more voters prefer X to this initiative than voters preferring X to the status quo or less voters prefer this initiative to X than voters preferring the status quo to X';
-COMMENT ON COLUMN "initiative"."eligible"               IS 'Initiative has a "direct_majority" and an "indirect_majority", is "better_than_status_quo" and depending on selected policy the initiative has no "multistage_majority"';
+COMMENT ON COLUMN "initiative"."eligible"               IS 'Initiative has a "direct_majority" and an "indirect_majority", is "better_than_status_quo" and depending on selected policy the initiative has no "reverse_beat_path" or "multistage_majority"';
 COMMENT ON COLUMN "initiative"."winner"                 IS 'Winner is the "eligible" initiative with best "schulze_rank"';
 COMMENT ON COLUMN "initiative"."rank"                   IS 'Unique ranking for all "admitted" initiatives per issue; lower rank is better; a winner always has rank 1, but rank 1 does not imply that an initiative is winner; initiatives with "direct_majority" AND "indirect_majority" always have a better (lower) rank than other initiatives';
 
@@ -4195,6 +4202,9 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
           "better_than_status_quo" = "rank_ary"["i"] < "rank_ary"[1],
           "worse_than_status_quo"  = "rank_ary"["i"] > "rank_ary"[1],
           "multistage_majority"    = "rank_ary"["i"] >= "rank_ary"[1],
+          "reverse_beat_path"      = CASE WHEN "policy_row"."defeat_strength" = 'simple'::"defeat_strength"
+                                     THEN NULL
+                                     ELSE "matrix_p"[1]["i"]."primary" >= 0 END,
           "eligible"               = FALSE,
           "winner"                 = FALSE,
           "rank"                   = NULL  -- NOTE: in cases of manual reset of issue state
@@ -4273,7 +4283,10 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
         AND "initiative"."better_than_status_quo"
         AND (
           "policy_row"."no_multistage_majority" = FALSE OR
-          "initiative"."multistage_majority" = FALSE );
+          "initiative"."multistage_majority" = FALSE )
+        AND (
+          "policy_row"."no_reverse_beat_path" = FALSE OR
+          coalesce("initiative"."reverse_beat_path", FALSE) = FALSE );
       -- mark final winner:
       UPDATE "initiative" SET "winner" = TRUE
         FROM (
