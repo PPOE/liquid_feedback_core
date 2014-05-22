@@ -296,7 +296,7 @@ CREATE FUNCTION "calculate_ranks"("issue_id_p" "issue"."id"%TYPE)
                     IF "i" != "j" THEN
                       "matrix_t"["i"]["j"] := CASE
                          WHEN "matrix_f"["i"]["j"]
-                         THEN (-1::INT8) << 63  -- worst possible value
+                         THEN ((-1::INT8) << 63, 0)::"link_strength"  -- worst possible value
                          ELSE "matrix_d"["i"]["j"] END;
                     END IF;
                     EXIT WHEN "j" = "dimension_v";
