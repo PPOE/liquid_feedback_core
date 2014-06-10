@@ -3777,7 +3777,7 @@ CREATE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
           JOIN "vote" AS "agg"
           ON "initiative"."id" = "agg"."initiative_id"
           AND "vote"."member_id" = "agg"."member_id"
-          GROUP BY "vote"."initiative_id", "vote"."member_id"
+          GROUP BY "vote"."initiative_id", "vote"."member_id", "vote"."grade"
         ) AS "subquery"
         WHERE "vote"."issue_id" = "issue_id_p"
         AND "vote"."initiative_id" = "subquery"."initiative_id"
