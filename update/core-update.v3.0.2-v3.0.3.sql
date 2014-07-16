@@ -239,9 +239,23 @@ CREATE OR REPLACE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
           FROM "direct_voter" WHERE "issue_id" = "issue_id_p"
         )
         WHERE "id" = "issue_id_p";
+      -- copy "positive_votes" and "negative_votes" from "battle" table:
+      -- NOTE: "first_preference_votes" is set to a default of 0 at this step
+      UPDATE "initiative" SET
+        "first_preference_votes" = 0,
+        "positive_votes" = "battle_win"."count",
+        "negative_votes" = "battle_lose"."count"
+        FROM "battle" AS "battle_win", "battle" AS "battle_lose"
+        WHERE
+          "battle_win"."issue_id" = "issue_id_p" AND
+          "battle_win"."winning_initiative_id" = "initiative"."id" AND
+          "battle_win"."losing_initiative_id" ISNULL AND
+          "battle_lose"."issue_id" = "issue_id_p" AND
+          "battle_lose"."losing_initiative_id" = "initiative"."id" AND
+          "battle_lose"."winning_initiative_id" ISNULL;
       -- calculate "first_preference_votes":
-      UPDATE "initiative"
-        SET "first_preference_votes" = "subquery"."sum"
+      -- NOTE: will only set values not equal to zero
+      UPDATE "initiative" SET "first_preference_votes" = "subquery"."sum"
         FROM (
           SELECT "vote"."initiative_id", sum("direct_voter"."weight")
           FROM "vote" JOIN "direct_voter"
@@ -253,22 +267,6 @@ CREATE OR REPLACE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
         WHERE "initiative"."issue_id" = "issue_id_p"
         AND "initiative"."admitted"
         AND "initiative"."id" = "subquery"."initiative_id";
-      UPDATE "initiative" SET "first_preference_votes" = 0
-        WHERE "issue_id" = "issue_id_p"
-        AND "initiative"."admitted"
-        AND "first_preference_votes" ISNULL;
-      -- copy "positive_votes" and "negative_votes" from "battle" table:
-      UPDATE "initiative" SET
-        "positive_votes" = "battle_win"."count",
-        "negative_votes" = "battle_lose"."count"
-        FROM "battle" AS "battle_win", "battle" AS "battle_lose"
-        WHERE
-          "battle_win"."issue_id" = "issue_id_p" AND
-          "battle_win"."winning_initiative_id" = "initiative"."id" AND
-          "battle_win"."losing_initiative_id" ISNULL AND
-          "battle_lose"."issue_id" = "issue_id_p" AND
-          "battle_lose"."losing_initiative_id" = "initiative"."id" AND
-          "battle_lose"."winning_initiative_id" ISNULL;
     END;
   $$;
 
