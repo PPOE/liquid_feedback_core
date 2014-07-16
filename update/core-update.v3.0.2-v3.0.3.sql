@@ -1,7 +1,3 @@
--- NOTICE: This update script disables the "no_reserve_beat_path" setting for
---         all policies. If this is not intended, please edit this script
---         before applying it to your database.
-
 BEGIN;
 
 CREATE OR REPLACE VIEW "liquid_feedback_version" AS
