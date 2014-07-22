@@ -7,7 +7,7 @@
 BEGIN;
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('3.0.3', 3, 0, 3))
+  SELECT * FROM (VALUES ('3.0.4', 3, 0, 4))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -107,6 +107,9 @@ CREATE TABLE "member" (
         "last_delegation_check" TIMESTAMPTZ,
         "login"                 TEXT            UNIQUE,
         "password"              TEXT,
+        "authority"             TEXT,
+        "authority_uid"         TEXT,
+        "authority_login"       TEXT,
         "locked"                BOOLEAN         NOT NULL DEFAULT FALSE,
         "active"                BOOLEAN         NOT NULL DEFAULT FALSE,
         "admin"                 BOOLEAN         NOT NULL DEFAULT FALSE,
@@ -141,8 +144,15 @@ CREATE TABLE "member" (
         "text_search_data"      TSVECTOR,
         CONSTRAINT "active_requires_activated_and_last_activity"
           CHECK ("active" = FALSE OR ("activated" NOTNULL AND "last_activity" NOTNULL)),
+        CONSTRAINT "authority_requires_uid_and_vice_versa" 
+          CHECK ("authority" NOTNULL = "authority_uid" NOTNULL),
+        CONSTRAINT "authority_uid_unique_per_authority"
+          UNIQUE ("authority", "authority_uid"),
+        CONSTRAINT "authority_login_requires_authority"
+          CHECK ("authority" NOTNULL OR "authority_login" ISNULL),
         CONSTRAINT "name_not_null_if_activated"
           CHECK ("activated" ISNULL OR "name" NOTNULL) );
+CREATE INDEX "member_authority_login_idx" ON "member" ("authority_login");
 CREATE INDEX "member_active_idx" ON "member" ("active");
 CREATE INDEX "member_text_search_data_idx" ON "member" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
@@ -164,6 +174,9 @@ COMMENT ON COLUMN "member"."last_login"           IS 'Timestamp of last login';
 COMMENT ON COLUMN "member"."last_delegation_check" IS 'Timestamp of last delegation check (i.e. confirmation of all unit and area delegations)';
 COMMENT ON COLUMN "member"."login"                IS 'Login name';
 COMMENT ON COLUMN "member"."password"             IS 'Password (preferably as crypto-hash, depending on the frontend or access layer)';
+COMMENT ON COLUMN "member"."authority"            IS 'NULL if LiquidFeedback Core is authoritative for the member account; otherwise a string that indicates the source/authority of the external account (e.g. ''LDAP'' for an LDAP account)';
+COMMENT ON COLUMN "member"."authority_uid"        IS 'Unique identifier (unique per "authority") that allows to identify an external account (e.g. even if the login name changes)';
+COMMENT ON COLUMN "member"."authority_login"      IS 'Login name for external accounts (field is not unique!)';
 COMMENT ON COLUMN "member"."locked"               IS 'Locked members can not log in.';
 COMMENT ON COLUMN "member"."active"               IS 'Memberships, support and votes are taken into account when corresponding members are marked as active. Automatically set to FALSE, if "last_activity" is older than "system_setting"."member_ttl".';
 COMMENT ON COLUMN "member"."admin"                IS 'TRUE for admins, which can administrate other users and setup policies and areas';
@@ -335,6 +348,9 @@ CREATE TABLE "session" (
         "additional_secret"     TEXT,
         "expiry"                TIMESTAMPTZ     NOT NULL DEFAULT now() + '24 hours',
         "member_id"             INT8            REFERENCES "member" ("id") ON DELETE SET NULL,
+        "authority"             TEXT,
+        "authority_uid"         TEXT,
+        "authority_login"       TEXT,
         "needs_delegation_check" BOOLEAN        NOT NULL DEFAULT FALSE,
         "lang"                  TEXT );
 CREATE INDEX "session_expiry_idx" ON "session" ("expiry");
@@ -344,6 +360,9 @@ COMMENT ON TABLE "session" IS 'Sessions, i.e. for a web-frontend or API layer';
 COMMENT ON COLUMN "session"."ident"             IS 'Secret session identifier (i.e. random string)';
 COMMENT ON COLUMN "session"."additional_secret" IS 'Additional field to store a secret, which can be used against CSRF attacks';
 COMMENT ON COLUMN "session"."member_id"         IS 'Reference to member, who is logged in';
+COMMENT ON COLUMN "session"."authority"         IS 'Temporary store for "member"."authority" during member account creation';
+COMMENT ON COLUMN "session"."authority_uid"     IS 'Temporary store for "member"."authority_uid" during member account creation';
+COMMENT ON COLUMN "session"."authority_login"   IS 'Temporary store for "member"."authority_login" during member account creation';
 COMMENT ON COLUMN "session"."needs_delegation_check" IS 'Set to TRUE, if member must perform a delegation check to proceed with login; see column "last_delegation_check" in "member" table';
 COMMENT ON COLUMN "session"."lang"              IS 'Language code of the selected language';
 
